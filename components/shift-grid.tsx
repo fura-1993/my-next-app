@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef, useTransition } from 'react';
 import { addMonths, subMonths, format, getDate, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import holidays from '@holiday-jp/holiday_jp';
@@ -10,7 +10,7 @@ import { ShiftCell } from './shift-cell';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { useShiftTypes } from '@/contexts/shift-types-context';
-import { Trash2, UserCog } from 'lucide-react';
+import { Trash2, UserCog, Save } from 'lucide-react';
 import { EmployeeCreator } from './employee-creator';
 import { EmployeeEditor } from './employee-editor';
 import { createBrowserClient } from '@/utils/supabase/client';
@@ -24,6 +24,13 @@ interface ShiftEntry {
   shift_code: string;
 }
 
+// 保存待ちの変更を追跡する型
+interface PendingChange {
+  employeeId: number;
+  date: string;
+  shift: string;
+}
+
 const initialEmployees = [
   { id: 1, name: '橋本' },
   { id: 2, name: '棟方' },
@@ -35,6 +42,9 @@ const initialEmployees = [
   { id: 8, name: '小林', givenName: '利治' },
 ];
 
+// 変更後、保存までの待機時間（ミリ秒）
+const SAVE_DEBOUNCE_DELAY = 2000;
+
 export function ShiftGrid() {
   const [currentDate, setCurrentDate] = useState(new Date(2025, 2)); // 2025年3月
   const [shifts, setShifts] = useState<{ [key: string]: string }>({});
@@ -42,39 +52,56 @@ export function ShiftGrid() {
   const [selectedEmployee, setSelectedEmployee] = useState<typeof employees[0] | null>(null);
   const [isCreatingEmployee, setIsCreatingEmployee] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [hasPendingChanges, setHasPendingChanges] = useState(false);
+  const [isSaving, startSaving] = useTransition();
   const { getUpdatedShiftCode } = useShiftTypes();
   const supabase = createBrowserClient();
 
-  // データの読み込み
+  // 保存待ちの変更を管理するRef
+  const pendingChangesRef = useRef<Map<string, PendingChange>>(new Map());
+  // 自動保存タイマーのRef
+  const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // ローカルキャッシュを維持するRef（オプティミスティックUI用）
+  const shiftsRef = useRef<{ [key: string]: string }>({});
+
+  // 変更があったときにhasPendingChangesを更新
+  useEffect(() => {
+    shiftsRef.current = shifts;
+    setHasPendingChanges(pendingChangesRef.current.size > 0);
+  }, [shifts]);
+
+  // データの読み込み - React 18のuseTransitionでラップして優先度を下げる
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
-      try {
-        // shift_cellsテーブルからデータを取得
-        const { data, error } = await supabase
-          .from('shift_cells')
-          .select('*')
-          .gte('date', format(startOfMonth(currentDate), 'yyyy-MM-dd'))
-          .lte('date', format(endOfMonth(currentDate), 'yyyy-MM-dd'));
+      startSaving(async () => {
+        try {
+          // shift_cellsテーブルからデータを取得
+          const { data, error } = await supabase
+            .from('shift_cells')
+            .select('*')
+            .gte('date', format(startOfMonth(currentDate), 'yyyy-MM-dd'))
+            .lte('date', format(endOfMonth(currentDate), 'yyyy-MM-dd'));
 
-        if (error) {
-          console.error('Failed to fetch shifts:', error);
-          return;
+          if (error) {
+            console.error('Failed to fetch shifts:', error);
+            return;
+          }
+
+          // シフトデータをローカル形式に変換
+          const shiftMap: { [key: string]: string } = {};
+          data?.forEach(entry => {
+            const key = `${entry.employee_id}-${entry.date}`;
+            shiftMap[key] = entry.shift_code;
+          });
+
+          setShifts(shiftMap);
+        } catch (err) {
+          console.error('Error loading shifts:', err);
+        } finally {
+          setIsLoading(false);
         }
-
-        // シフトデータをローカル形式に変換
-        const shiftMap: { [key: string]: string } = {};
-        data?.forEach(entry => {
-          const key = `${entry.employee_id}-${entry.date}`;
-          shiftMap[key] = entry.shift_code;
-        });
-
-        setShifts(shiftMap);
-      } catch (err) {
-        console.error('Error loading shifts:', err);
-      } finally {
-        setIsLoading(false);
-      }
+      });
     };
 
     fetchData();
@@ -85,10 +112,122 @@ export function ShiftGrid() {
     end: endOfMonth(currentDate),
   });
 
-  const handlePrevMonth = () => setCurrentDate(subMonths(currentDate, 1));
-  const handleNextMonth = () => setCurrentDate(addMonths(currentDate, 1));
+  const handlePrevMonth = () => {
+    // 保存処理をトリガー
+    if (pendingChangesRef.current.size > 0) {
+      saveAllPendingChanges();
+    }
+    setCurrentDate(subMonths(currentDate, 1));
+  };
 
-  const handleShiftChange = async (employeeId: number, date: Date, newShift: string) => {
+  const handleNextMonth = () => {
+    // 保存処理をトリガー
+    if (pendingChangesRef.current.size > 0) {
+      saveAllPendingChanges();
+    }
+    setCurrentDate(addMonths(currentDate, 1));
+  };
+
+  // 一定期間操作がなければ保存する（デバウンス処理）
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+
+    saveTimerRef.current = setTimeout(() => {
+      if (pendingChangesRef.current.size > 0) {
+        saveAllPendingChanges();
+      }
+    }, SAVE_DEBOUNCE_DELAY);
+  }, []);
+
+  // 保存処理
+  const saveAllPendingChanges = useCallback(async () => {
+    if (pendingChangesRef.current.size === 0) return;
+
+    const changes = Array.from(pendingChangesRef.current.values());
+    const changesCopy = [...changes]; // 保存用のコピー
+    
+    startSaving(async () => {
+      try {
+        // 一括で処理するためのバッチ操作を準備
+        const changesById = new Map<number, PendingChange>();
+        const changesForInsert: Omit<ShiftEntry, 'id'>[] = [];
+
+        // 既存のデータを検索して、更新と挿入に分類
+        const promises = changes.map(async (change) => {
+          const { data } = await supabase
+            .from('shift_cells')
+            .select('id')
+            .eq('employee_id', change.employeeId)
+            .eq('date', change.date)
+            .maybeSingle();
+
+          if (data?.id) {
+            changesById.set(data.id, change);
+          } else {
+            changesForInsert.push({
+              employee_id: change.employeeId,
+              date: change.date,
+              shift_code: change.shift
+            });
+          }
+        });
+
+        await Promise.all(promises);
+
+        // トランザクション的に処理（一括操作）
+        const operations = [];
+
+        // 更新処理
+        if (changesById.size > 0) {
+          // Map.entriesをArray.fromで変換してから反復処理
+          Array.from(changesById.entries()).forEach(([id, change]) => {
+            operations.push(
+              supabase
+                .from('shift_cells')
+                .update({ shift_code: change.shift })
+                .eq('id', id)
+            );
+          });
+        }
+
+        // 挿入処理
+        if (changesForInsert.length > 0) {
+          operations.push(
+            supabase
+              .from('shift_cells')
+              .insert(changesForInsert)
+          );
+        }
+
+        // 並列で実行
+        const results = await Promise.all(operations);
+        
+        // エラーチェック
+        const hasError = results.some(result => result.error);
+        
+        if (hasError) {
+          throw new Error('Some operations failed');
+        }
+
+        // 保存に成功したら、保存待ちの変更をクリア
+        changesCopy.forEach(change => {
+          const key = `${change.employeeId}-${change.date}`;
+          pendingChangesRef.current.delete(key);
+        });
+
+        setHasPendingChanges(pendingChangesRef.current.size > 0);
+        toast.success('シフトを保存しました');
+      } catch (err) {
+        console.error('Error saving shifts:', err);
+        toast.error('シフトの保存に失敗しました');
+      }
+    });
+  }, [supabase]);
+
+  // シフト変更時のハンドラ
+  const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
@@ -98,63 +237,34 @@ export function ShiftGrid() {
       [key]: newShift
     }));
 
-    try {
-      // まず既存のデータを確認
-      const { data: existingData } = await supabase
-        .from('shift_cells')
-        .select('id')
-        .eq('employee_id', employeeId)
-        .eq('date', dateStr)
-        .maybeSingle();
+    // 保存待ちの変更に追加
+    pendingChangesRef.current.set(key, {
+      employeeId,
+      date: dateStr,
+      shift: newShift
+    });
 
-      if (existingData) {
-        // 既存データを更新
-        const { error } = await supabase
-          .from('shift_cells')
-          .update({ shift_code: newShift })
-          .eq('id', existingData.id);
+    // 自動保存をスケジュール
+    scheduleSave();
+  }, [scheduleSave]);
 
-        if (error) throw error;
-      } else {
-        // 新規データを作成
-        const { error } = await supabase
-          .from('shift_cells')
-          .insert({
-            employee_id: employeeId,
-            date: dateStr,
-            shift_code: newShift
-          });
-
-        if (error) throw error;
-      }
-    } catch (err) {
-      console.error('Error saving shift:', err);
-      toast.error('シフトの保存に失敗しました');
-      
-      // エラー時に元の状態に戻す
-      setShifts(prev => {
-        const newShifts = { ...prev };
-        delete newShifts[key];
-        return newShifts;
-      });
-    }
-  };
-
-  const getShiftValue = (employeeId: number, date: Date) => {
+  const getShiftValue = useCallback((employeeId: number, date: Date) => {
     const key = `${employeeId}-${format(date, 'yyyy-MM-dd')}`;
-    const shift = shifts[key];
+    const shift = shiftsRef.current[key];
     return shift ? getUpdatedShiftCode(shift) : '−';
-  };
+  }, [getUpdatedShiftCode]);
 
-  const isWeekend = (date: Date) => {
+  const isWeekend = useCallback((date: Date) => {
     const day = getDay(date);
     return day === 0;
-  };
+  }, []);
 
-  const isSaturday = (date: Date) => getDay(date) === 6;
+  const isSaturday = useCallback((date: Date) => getDay(date) === 6, []);
 
-  const handleDeleteAllShifts = async () => {
+  const handleDeleteAllShifts = useCallback(async () => {
     try {
+      setIsLoading(true);
+      
       // 現在の月のデータを削除
       const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
       const endDate = format(endOfMonth(currentDate), 'yyyy-MM-dd');
@@ -169,23 +279,42 @@ export function ShiftGrid() {
       
       // ローカルデータをクリア
       setShifts({});
+      // 保存待ちデータもクリア
+      pendingChangesRef.current.clear();
+      setHasPendingChanges(false);
+      
       toast.success('すべてのシフトを削除しました');
     } catch (err) {
       console.error('Error deleting shifts:', err);
       toast.error('シフトの削除に失敗しました');
+    } finally {
+      setIsLoading(false);
     }
-  };
+  }, [currentDate, supabase]);
 
-  const handleEmployeeUpdate = (updatedEmployee: typeof employees[0]) => {
+  const handleEmployeeUpdate = useCallback((updatedEmployee: { id: number; name: string; givenName?: string }) => {
     setEmployees(prev => prev.map(emp => 
       emp.id === updatedEmployee.id ? updatedEmployee : emp
     ));
-  };
+  }, []);
 
-  const handleAddEmployee = (newEmployee: { name: string; givenName?: string }) => {
+  const handleAddEmployee = useCallback((newEmployee: { name: string; givenName?: string }) => {
     const newId = Math.max(...employees.map(e => e.id)) + 1;
     setEmployees(prev => [...prev, { id: newId, ...newEmployee }]);
-  };
+  }, [employees]);
+
+  // コンポーネントがアンマウントされるときに保存
+  useEffect(() => {
+    return () => {
+      if (pendingChangesRef.current.size > 0) {
+        saveAllPendingChanges();
+      }
+      
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, [saveAllPendingChanges]);
 
   return (
     <div className="min-h-screen pb-20">
@@ -198,6 +327,12 @@ export function ShiftGrid() {
       />
       <ShiftLegend />
       <div className="overflow-x-auto">
+        {isLoading && (
+          <div className="flex justify-center items-center py-8">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+            <span className="ml-2">データを読み込み中...</span>
+          </div>
+        )}
         <table className="w-full border-collapse [&_td]:border-black/60 [&_th]:border-black/60 [&_td]:border-[1px] [&_th]:border-[1px] rounded-2xl overflow-hidden">
           <thead>
             <tr className="bg-gradient-to-b from-gray-50/95 to-gray-50/90">
@@ -313,7 +448,7 @@ export function ShiftGrid() {
             ))}
           </tbody>
         </table>
-        <div className="mt-4 pl-4">
+        <div className="mt-4 pl-4 flex items-center gap-3">
           <button
             className="floating-add inline-flex items-center justify-center rounded-full text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 h-10 px-4"
             onClick={() => setIsCreatingEmployee(true)}
@@ -337,6 +472,28 @@ export function ShiftGrid() {
             </div>
             担当者を追加
           </button>
+          
+          {hasPendingChanges && (
+            <button
+              onClick={saveAllPendingChanges}
+              disabled={isSaving}
+              className={cn(
+                "inline-flex items-center justify-center rounded-full text-sm font-medium",
+                "transition-all duration-200 ease-in-out",
+                "bg-green-600 text-white shadow-lg hover:bg-green-700 h-10 px-4",
+                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                isSaving && "opacity-70 cursor-not-allowed"
+              )}
+            >
+              <Save className="w-4 h-4 mr-1.5" />
+              {isSaving ? "保存中..." : "保存"}
+              {!isSaving && (
+                <span className="ml-1 animate-pulse bg-green-400 text-green-800 text-xs rounded-full px-1.5 py-0.5">
+                  {pendingChangesRef.current.size}
+                </span>
+              )}
+            </button>
+          )}
         </div>
       </div>
       <div className="fixed bottom-6 right-6">
