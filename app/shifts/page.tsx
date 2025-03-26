@@ -1,5 +1,7 @@
 import { createClient } from '@/utils/supabase/server';
 
+export const dynamic = 'force-dynamic';
+
 // 型定義
 interface Staff {
   staff_name: string;
