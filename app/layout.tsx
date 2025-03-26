@@ -1,6 +1,7 @@
 import './globals.css';
 import type { Metadata } from 'next';
 import { ShiftTypesProvider } from '@/contexts/shift-types-context';
+import { Toaster } from '@/components/ui/toaster';
 
 export const metadata: Metadata = {
   title: 'Create Next App',
@@ -15,7 +16,10 @@ export default function RootLayout({
   return (
     <html lang="ja">
       <body className="font-sans">
-        <ShiftTypesProvider>{children}</ShiftTypesProvider>
+        <ShiftTypesProvider>
+          {children}
+          <Toaster />
+        </ShiftTypesProvider>
       </body>
     </html>
   );
