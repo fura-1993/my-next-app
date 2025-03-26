@@ -2,6 +2,7 @@ import './globals.css';
 import type { Metadata } from 'next';
 import { ShiftTypesProvider } from '@/contexts/shift-types-context';
 import { Toaster } from '@/components/ui/toaster';
+import { Toaster as SonnerToaster } from 'sonner';
 
 export const metadata: Metadata = {
   title: 'Create Next App',
@@ -19,6 +20,7 @@ export default function RootLayout({
         <ShiftTypesProvider>
           {children}
           <Toaster />
+          <SonnerToaster position="top-right" />
         </ShiftTypesProvider>
       </body>
     </html>
