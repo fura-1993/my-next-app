@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { format, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import jsPDF from 'jspdf';
@@ -84,6 +84,11 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
     try {
       setIsGenerating(true);
       
+      // ブラウザ環境チェック
+      if (typeof window === 'undefined') {
+        throw new Error('ブラウザ環境でのみ使用できます');
+      }
+      
       const dataUrl = await toPng(previewRef.current, { 
         quality: 1,
         backgroundColor: '#ffffff',
@@ -103,7 +108,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
       toast.success('画像として保存しました');
     } catch (error) {
       console.error('画像のエクスポートに失敗しました:', error);
-      toast.error('エクスポートに失敗しました');
+      toast.error('エクスポートに失敗しました: ' + (error instanceof Error ? error.message : '未知のエラー'));
     } finally {
       setIsGenerating(false);
       setIsOpen(false);
@@ -114,6 +119,11 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
   const exportAsPdf = () => {
     try {
       setIsGenerating(true);
+      
+      // ブラウザ環境チェック
+      if (typeof window === 'undefined') {
+        throw new Error('ブラウザ環境でのみ使用できます');
+      }
       
       // PDF設定
       const unit = 'mm';
@@ -264,7 +274,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
       toast.success('PDFとして保存しました');
     } catch (error) {
       console.error('PDFのエクスポートに失敗しました:', error);
-      toast.error('エクスポートに失敗しました');
+      toast.error('PDF生成に失敗しました: ' + (error instanceof Error ? error.message : '未知のエラー'));
     } finally {
       setIsGenerating(false);
       setIsOpen(false);

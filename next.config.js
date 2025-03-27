@@ -10,7 +10,6 @@ const nextConfig = {
   },
   experimental: {
     serverComponentsExternalPackages: [],
-    telemetry: false,
     optimizePackageImports: [
       'lucide-react',
       '@radix-ui/react-icons',
@@ -20,7 +19,6 @@ const nextConfig = {
       'lodash'
     ],
     optimizeCss: true,
-    parallelServerRunning: true,
     turbotrace: {
       logLevel: 'error',
       contextDirectory: __dirname
@@ -33,6 +31,17 @@ const nextConfig = {
   reactStrictMode: true,
   typescript: {
     ignoreBuildErrors: true
+  },
+  webpack: (config) => {
+    config.externals = [...(config.externals || []), { canvas: 'canvas' }];
+    
+    config.resolve.fallback = {
+      ...config.resolve.fallback,
+      canvas: false,
+      encoding: false
+    };
+    
+    return config;
   }
 };
 
