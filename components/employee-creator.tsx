@@ -1,80 +1,72 @@
 'use client';
 
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { Button } from './ui/button';
 import { useState } from 'react';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 
 interface EmployeeCreatorProps {
-  isOpen: boolean;
   onClose: () => void;
-  onSave: (employee: { name: string; givenName?: string }) => void;
-  currentEmployeeCount: number;
+  onAdd: (employee: { name: string; given_name?: string }) => void;
 }
 
-export function EmployeeCreator({ isOpen, onClose, onSave, currentEmployeeCount }: EmployeeCreatorProps) {
-  const [newEmployee, setNewEmployee] = useState({ name: '', givenName: '' });
+export function EmployeeCreator({ onClose, onAdd }: EmployeeCreatorProps) {
+  const [name, setName] = useState('');
+  const [givenName, setGivenName] = useState('');
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSave({
-      name: newEmployee.name,
-      givenName: newEmployee.givenName || undefined
+  const handleSave = () => {
+    if (!name.trim()) return;
+    
+    onAdd({
+      name: name.trim(),
+      given_name: givenName.trim() || undefined
     });
-    setNewEmployee({ name: '', givenName: '' });
+    
     onClose();
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[280px] shadow-[0_20px_70px_-15px_rgba(0,0,0,0.3)] border-white/20 bg-white/95 backdrop-blur-sm">
+    <Dialog open={true} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle className="text-sm">新規担当者追加</DialogTitle>
+          <DialogTitle>新規従業員の追加</DialogTitle>
+          <DialogDescription>
+            新しい従業員の情報を入力してください。
+          </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <Label htmlFor="name" className="text-xs">姓</Label>
+        <div className="grid gap-4 py-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="name" className="text-right">
+              氏
+            </Label>
             <Input
               id="name"
-              value={newEmployee.name}
-              onChange={(e) => setNewEmployee({ ...newEmployee, name: e.target.value })}
-              className="h-8 text-sm"
-              required
-              maxLength={10}
-              placeholder="例: 山田"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="col-span-3"
+              autoFocus
             />
           </div>
-          <div>
-            <Label htmlFor="givenName" className="text-xs">名 (省略可)</Label>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="given-name" className="text-right">
+              名
+            </Label>
             <Input
-              id="givenName"
-              value={newEmployee.givenName}
-              onChange={(e) => setNewEmployee({ ...newEmployee, givenName: e.target.value })}
-              className="h-8 text-sm"
-              maxLength={10}
-              placeholder="例: 太郎"
+              id="given-name"
+              value={givenName}
+              onChange={(e) => setGivenName(e.target.value)}
+              className="col-span-3"
+              placeholder="(任意)"
             />
           </div>
-          <div className="flex justify-end gap-1.5 pt-1">
-            <Button 
-              type="button" 
-              variant="outline" 
-              onClick={onClose}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-            >
-              キャンセル
-            </Button>
-            <Button 
-              type="submit"
-              size="sm"
-              className="h-7 px-2.5 text-xs bg-gradient-to-b from-primary/90 to-primary shadow-lg"
-            >
-              追加
-            </Button>
-          </div>
-        </form>
+        </div>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">キャンセル</Button>
+          </DialogClose>
+          <Button type="submit" onClick={handleSave} disabled={!name.trim()}>追加</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

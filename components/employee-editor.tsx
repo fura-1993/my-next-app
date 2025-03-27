@@ -1,78 +1,76 @@
 'use client';
 
 import { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from './ui/dialog';
-import { Input } from './ui/input';
-import { Label } from './ui/label';
-import { Button } from './ui/button';
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 
 interface Employee {
   id: number;
   name: string;
-  givenName?: string;
+  given_name?: string;
 }
 
 interface EmployeeEditorProps {
   employee: Employee;
-  isOpen: boolean;
   onClose: () => void;
-  onSave: (updatedEmployee: Employee) => void;
+  onUpdate: (employee: Employee) => void;
 }
 
-export function EmployeeEditor({ employee, isOpen, onClose, onSave }: EmployeeEditorProps) {
-  const [editedEmployee, setEditedEmployee] = useState<Employee>(employee);
+export function EmployeeEditor({ employee, onClose, onUpdate }: EmployeeEditorProps) {
+  const [name, setName] = useState(employee.name);
+  const [givenName, setGivenName] = useState(employee.given_name || '');
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onSave(editedEmployee);
+  const handleSave = () => {
+    onUpdate({
+      ...employee,
+      name,
+      given_name: givenName || undefined
+    });
     onClose();
   };
 
   return (
-    <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[280px] shadow-[0_20px_70px_-15px_rgba(0,0,0,0.3)] border-white/20 bg-white/95 backdrop-blur-sm">
+    <Dialog open={true} onOpenChange={onClose}>
+      <DialogContent className="sm:max-w-[425px]">
         <DialogHeader>
-          <DialogTitle className="text-sm">担当者編集</DialogTitle>
+          <DialogTitle>従業員情報の編集</DialogTitle>
+          <DialogDescription>
+            従業員情報を編集して保存ボタンをクリックしてください。
+          </DialogDescription>
         </DialogHeader>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <Label htmlFor="name" className="text-xs">姓</Label>
+        <div className="grid gap-4 py-4">
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="name" className="text-right">
+              氏
+            </Label>
             <Input
               id="name"
-              value={editedEmployee.name}
-              onChange={(e) => setEditedEmployee({ ...editedEmployee, name: e.target.value })}
-              className="h-8 text-sm"
-              required
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="col-span-3"
             />
           </div>
-          <div>
-            <Label htmlFor="givenName" className="text-xs">名</Label>
+          <div className="grid grid-cols-4 items-center gap-4">
+            <Label htmlFor="given-name" className="text-right">
+              名
+            </Label>
             <Input
-              id="givenName"
-              value={editedEmployee.givenName || ''}
-              onChange={(e) => setEditedEmployee({ ...editedEmployee, givenName: e.target.value || undefined })}
-              className="h-8 text-sm"
+              id="given-name"
+              value={givenName}
+              onChange={(e) => setGivenName(e.target.value)}
+              className="col-span-3"
+              placeholder="(任意)"
             />
           </div>
-          <div className="flex justify-end gap-1.5 pt-1">
-            <Button 
-              type="button" 
-              variant="outline" 
-              onClick={onClose}
-              size="sm"
-              className="h-7 px-2.5 text-xs"
-            >
-              キャンセル
-            </Button>
-            <Button 
-              type="submit"
-              size="sm"
-              className="h-7 px-2.5 text-xs bg-gradient-to-b from-primary/90 to-primary shadow-lg"
-            >
-              保存
-            </Button>
-          </div>
-        </form>
+        </div>
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">キャンセル</Button>
+          </DialogClose>
+          <Button type="submit" onClick={handleSave}>保存</Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );
