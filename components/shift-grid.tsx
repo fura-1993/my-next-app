@@ -48,10 +48,10 @@ const initialEmployees = [
   { id: 8, name: '小林', givenName: '利治' },
 ];
 
-// キャッシュ有効期限 (1週間 - ほぼ永続的)
-const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
-// データ遅延読み込み時間 (ms)
-const LAZY_LOAD_DELAY = 10;
+// キャッシュ有効期限 (2週間)
+const CACHE_TTL = 14 * 24 * 60 * 60 * 1000;
+// データベース操作の最小ブロック時間 (ms) - UIちらつき防止
+const MIN_DB_OPERATION_TIME = 500;
 
 // 従業員行コンポーネント（メモ化）
 const EmployeeRow = React.memo(({ 
@@ -268,6 +268,8 @@ export function ShiftGrid() {
   }>({});
   // 初期ロード完了フラグ
   const initialLoadDoneRef = useRef<{[key: string]: boolean}>({});
+  // 指定された月のデータロード中フラグ
+  const isLoadingMonthRef = useRef<{[key: string]: boolean}>({});
 
   // カスタムイベントリスナーをセットアップ
   useEffect(() => {
@@ -288,9 +290,14 @@ export function ShiftGrid() {
     format(currentDate, 'yyyy-MM'), 
   [currentDate]);
 
-  // 処理ブロックを設定・解除する関数
+  // 処理ブロックを設定・解除する関数（応答性向上のためブロック時間を短縮）
   const setProcessLock = useCallback((isLocked: boolean) => {
-    isProcessingRef.current = isLocked;
+    if (isLocked) {
+      isProcessingRef.current = true;
+    } else {
+      // 処理ブロック解除
+      isProcessingRef.current = false;
+    }
   }, []);
 
   // 変更があった場合のみ保存状態を更新（無駄なレンダリングを防止）
@@ -302,14 +309,20 @@ export function ShiftGrid() {
     }
   }, [shifts, hasPendingChanges]);
 
-  // データ読み込み - 効率的な実装
+  // データ読み込み - 完全に手動操作のみ（初回読み込みは除く）
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
+    // 処理中・データベース操作中は何もしない
     if (isProcessingRef.current) return;
     
     const monthKey = format(date, 'yyyy-MM');
     
-    // 初回ロード済みでforceReloadでなければ何もしない
+    // 既に初回ロード済みで強制リロードでなければ何もしない
     if (initialLoadDoneRef.current[monthKey] && !forceReload) {
+      return;
+    }
+    
+    // 同じ月のデータをロード中なら何もしない（二重ロード防止）
+    if (isLoadingMonthRef.current[monthKey]) {
       return;
     }
     
@@ -325,9 +338,10 @@ export function ShiftGrid() {
     try {
       setProcessLock(true);
       setIsLoading(true);
+      isLoadingMonthRef.current[monthKey] = true;
       
-      // 非同期処理を遅延実行しUIをブロックしない
-      await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_DELAY));
+      // 最低限の処理時間を確保して応答感向上
+      const startTime = Date.now();
       
       // 大きなバッチサイズでデータ取得
       const { data, error } = await supabase
@@ -342,9 +356,20 @@ export function ShiftGrid() {
         return;
       }
 
+      // ブロッキング時間を最低限確保（UXのため）
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime < MIN_DB_OPERATION_TIME) {
+        await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
+      }
+
       // 高速化したデータ変換（プリアロケーション）
       const shiftMap: { [key: string]: string } = {};
       if (data) {
+        // データが多い場合は即座に空のマップをセット
+        if (data.length > 200) {
+          setShifts({});
+        }
+        
         // バックグラウンドでの非同期データ変換
         taskQueueRef.current.add(async () => {
           if (data) {
@@ -381,6 +406,7 @@ export function ShiftGrid() {
     } finally {
       setIsLoading(false);
       setProcessLock(false);
+      isLoadingMonthRef.current[monthKey] = false;
     }
   }, [supabase, setProcessLock]);
 
@@ -388,6 +414,7 @@ export function ShiftGrid() {
   useEffect(() => {
     const monthKey = format(currentDate, 'yyyy-MM');
     if (!initialLoadDoneRef.current[monthKey]) {
+      // 初回ロードのみデータを取得
       fetchData(currentDate);
     }
   }, [currentDate, fetchData]);
@@ -400,8 +427,9 @@ export function ShiftGrid() {
     }), 
   [currentDate]);
 
-  // 月切り替え処理（手動操作のみ）
+  // 月切り替え処理（手動操作のみ、自動データ取得なし）
   const handlePrevMonth = useCallback(() => {
+    // 処理中は何もしない
     if (isProcessingRef.current) return;
     
     setCurrentDate(prev => {
@@ -411,6 +439,7 @@ export function ShiftGrid() {
   }, []);
 
   const handleNextMonth = useCallback(() => {
+    // 処理中は何もしない
     if (isProcessingRef.current) return;
     
     setCurrentDate(prev => {
@@ -419,22 +448,33 @@ export function ShiftGrid() {
     });
   }, []);
 
-  // データの手動更新
+  // データの手動更新（ボタンクリック時のみ実行）
   const handleRefreshData = useCallback(() => {
+    // 処理中・保存中・読み込み中は何もしない
     if (isProcessingRef.current || isLoading || isSaving) return;
     
+    // 未保存の変更がある場合は確認
+    if (pendingChangesRef.current.size > 0) {
+      if (!confirm('未保存の変更があります。データを更新すると変更が失われますが、続行しますか？')) {
+        return;
+      }
+    }
+    
+    // 強制的にリロード
     fetchData(currentDate, true);
     toast.info('データを最新の状態に更新しています...');
   }, [currentDate, fetchData, isLoading, isSaving]);
 
-  // 保存処理（すべての変更を保存 - 手動のみ・高度に最適化）
+  // 保存処理（すべての変更を保存 - ボタンクリック時のみ実行）
   const saveAllChanges = useCallback(async () => {
+    // 保存するデータがない場合や処理中は何もしない
     if (pendingChangesRef.current.size === 0 || isProcessingRef.current) return;
     
     try {
       setProcessLock(true);
       setIsSaving(true);
       
+      const startTime = Date.now();
       const changes = Array.from(pendingChangesRef.current.values());
       
       // バッチ処理のための準備
@@ -481,7 +521,7 @@ export function ShiftGrid() {
       await Promise.all(processingPromises);
       
       // 更新処理のバッチ実行（並列処理で高速化）
-      const BATCH_SIZE = 200; // 大きなバッチサイズで効率化
+      const BATCH_SIZE = 250; // 大きなバッチサイズで効率化
       const updatePromises = [];
       
       // 更新操作をバッチ処理
@@ -518,6 +558,12 @@ export function ShiftGrid() {
         await Promise.all(updatePromises);
       }
       
+      // ブロッキング時間確保（UX改善）
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime < MIN_DB_OPERATION_TIME) {
+        await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
+      }
+      
       // 非同期でキャッシュを更新（UIブロックを防止）
       taskQueueRef.current.add(async () => {
         // キャッシュを更新（メモリ内のみ）
@@ -548,8 +594,9 @@ export function ShiftGrid() {
     }
   }, [supabase, currentMonthKey, setProcessLock]);
 
-  // シフト変更時のハンドラ - 即時変更のみ・保存なし
+  // シフト変更時のハンドラ - ローカル状態のみ変更・データベース通信なし
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
+    // 処理中は何もしない
     if (isProcessingRef.current) return;
     
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -558,13 +605,13 @@ export function ShiftGrid() {
     // 同じ値なら何もしない（無駄な処理を回避）
     if (shiftsRef.current[key] === newShift) return;
     
-    // UIの即時更新（直接変更で高速化）
+    // UIの即時更新（直接変更で高速化）- データベース通信なし
     setShifts(prev => {
       const updated = { ...prev, [key]: newShift };
       return updated;
     });
 
-    // 保存待ちリストに追加（非同期で実行）
+    // 保存待ちリストに追加（ローカルのみ・非同期でデータベース通信なし）
     pendingChangesRef.current.set(key, {
       employeeId,
       date: dateStr,
@@ -579,13 +626,15 @@ export function ShiftGrid() {
     return shift ? getUpdatedShiftCode(shift) : '−';
   }, [getUpdatedShiftCode]);
 
-  // 全削除処理（高速実装）
+  // 全削除処理（ボタンクリック時のみ実行）
   const handleDeleteAllShifts = useCallback(async () => {
     if (isProcessingRef.current) return;
     
     try {
       setProcessLock(true);
       setIsLoading(true);
+      
+      const startTime = Date.now();
       
       // 現在の月のデータを削除
       const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
@@ -596,6 +645,12 @@ export function ShiftGrid() {
         .delete()
         .gte('date', startDate)
         .lte('date', endDate);
+      
+      // ブロッキング時間確保（UX改善）
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime < MIN_DB_OPERATION_TIME) {
+        await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
+      }
       
       // キャッシュから削除（非同期）
       taskQueueRef.current.add(async () => {
