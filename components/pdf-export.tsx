@@ -1,9 +1,8 @@
 'use client';
 
 import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
-import { FileText } from 'lucide-react';
+import { FileDown, Loader2 } from 'lucide-react';
 import { createBrowserClient } from '@/utils/supabase/client';
 
 interface PdfExportProps {
@@ -12,8 +11,8 @@ interface PdfExportProps {
 }
 
 /**
- * PDF出力ボタンコンポーネント - クライアントサイドで直接PDF生成を行う
- * サーバーサイドのAPIに依存せず、ブラウザで直接PDFを生成する
+ * 新しいPDF出力ボタンコンポーネント - モダンなデザインと改善されたUX
+ * クライアントサイドで直接PDF生成を行う
  */
 export function PdfExport({ currentDate, title = 'シフト表' }: PdfExportProps) {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -126,38 +125,37 @@ export function PdfExport({ currentDate, title = 'シフト表' }: PdfExportProp
     }
   };
   
+  if (!isClient) {
+    // サーバーサイドレンダリング時は何も表示しない
+    return null;
+  }
+  
   return (
-    <>
-      {isClient ? (
-        <Button
-          onClick={generatePdf}
-          variant="outline"
-          className="flex items-center gap-2 bg-white hover:bg-blue-50 hover:text-blue-600 transition-colors"
-          size="sm"
-          disabled={isGenerating}
-        >
-          <FileText className="h-4 w-4" />
-          {isGenerating ? (
-            <>
-              <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent mr-1" />
-              <span>生成中...</span>
-            </>
-          ) : (
-            <span>PDF出力</span>
-          )}
-        </Button>
+    <button
+      onClick={generatePdf}
+      disabled={isGenerating}
+      className="relative inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg text-white font-medium transition-all 
+      bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 
+      shadow-md hover:shadow-lg active:shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-300 focus:ring-offset-2 
+      disabled:opacity-70 disabled:cursor-not-allowed"
+      aria-label="PDF出力"
+    >
+      {isGenerating ? (
+        <>
+          <Loader2 className="h-5 w-5 animate-spin" />
+          <span>生成中...</span>
+        </>
       ) : (
-        // サーバーサイドレンダリング時はボタンだけ表示
-        <Button
-          variant="outline"
-          className="flex items-center gap-2 bg-white hover:bg-blue-50 hover:text-blue-600 transition-colors"
-          size="sm"
-          disabled
-        >
-          <FileText className="h-4 w-4" />
+        <>
+          <FileDown className="h-5 w-5" />
           <span>PDF出力</span>
-        </Button>
+        </>
       )}
-    </>
+      
+      {/* アクセシビリティ向上のための追加説明（スクリーンリーダー用） */}
+      <span className="sr-only">
+        シフト表をPDFとしてダウンロードします
+      </span>
+    </button>
   );
 } 
