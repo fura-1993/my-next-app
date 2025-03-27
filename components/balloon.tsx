@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useState, useRef, useEffect } from 'react';
+import { useCallback, useState, useRef, useEffect, memo } from 'react';
 import { cn } from '@/lib/utils';
 
 interface BalloonProps {
@@ -8,7 +8,8 @@ interface BalloonProps {
   isWhite?: boolean;
 }
 
-export function Balloon({ onBurst, isWhite }: BalloonProps) {
+// 風船コンポーネントをメモ化して不要な再レンダリングを防止
+export const Balloon = memo(function Balloon({ onBurst, isWhite }: BalloonProps) {
   const [isPopped, setIsPopped] = useState(false);
   const balloonRef = useRef<HTMLDivElement>(null);
   
@@ -30,11 +31,30 @@ export function Balloon({ onBurst, isWhite }: BalloonProps) {
     return () => clearTimeout(timer);
   }, [isPopped]);
 
+  // CSS変数とスタイルをメモ化
+  const burstParticles = isPopped ? (
+    <>
+      <div className="burst-ring" />
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div 
+          key={i}
+          className="burst-particle"
+          style={{
+            '--angle': `${i * 60}deg`,
+            '--delay': `${i * 0.02}s`
+          } as React.CSSProperties}
+        />
+      ))}
+    </>
+  ) : null;
+
+  // パフォーマンスを最適化するためにcssアニメーションを使用
   return (
     <div 
       ref={balloonRef}
       className={`balloon-container ${isPopped ? 'popped' : ''}`}
       onClick={handlePop}
+      style={{ willChange: 'transform' }} // GPUアクセラレーションのヒント
     >
       <div className="balloon">
         <div 
@@ -54,21 +74,7 @@ export function Balloon({ onBurst, isWhite }: BalloonProps) {
       </div>
       
       {/* Burst particles - only created when popping */}
-      {isPopped && (
-        <>
-          <div className="burst-ring" />
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div 
-              key={i}
-              className="burst-particle"
-              style={{
-                '--angle': `${i * 60}deg`,
-                '--delay': `${i * 0.02}s`
-              } as React.CSSProperties}
-            />
-          ))}
-        </>
-      )}
+      {burstParticles}
     </div>
   );
-}
+});

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { addMonths, subMonths, format, getDate, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import holidays from '@holiday-jp/holiday_jp';
@@ -16,6 +16,7 @@ import { EmployeeEditor } from './employee-editor';
 import { createBrowserClient } from '@/utils/supabase/client';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { debounce } from 'lodash';
 
 // 型定義
 interface ShiftEntry {
@@ -52,10 +53,44 @@ export function ShiftGrid() {
   const [isSaving, setIsSaving] = useState(false);
   const { getUpdatedShiftCode, saveAllShiftTypes } = useShiftTypes();
   const supabase = createBrowserClient();
+  const pendingShiftUpdates = useRef<Map<string, ShiftEntry>>(new Map());
+  const debouncedSaveShifts = useRef<ReturnType<typeof debounce>>();
 
+  // 初期化時にデータ保存のdebounce関数を作成
+  useEffect(() => {
+    debouncedSaveShifts.current = debounce(async () => {
+      if (!pendingShiftUpdates.current.size || !supabase) return;
+      
+      try {
+        // 更新が必要なデータを配列に変換
+        const updates = Array.from(pendingShiftUpdates.current.values());
+        
+        // バルク更新処理
+        const { error } = await supabase
+          .from('shift_cells')
+          .upsert(updates, { onConflict: 'employee_id,date' });
+        
+        if (error) throw error;
+        
+        // 成功したら保留中のアップデートをクリア
+        pendingShiftUpdates.current.clear();
+      } catch (err) {
+        console.error('Error bulk saving shifts:', err);
+        toast.error('一部のシフトの保存に失敗しました');
+      }
+    }, 2000); // 2秒間の操作停止後に保存実行
+    
+    return () => {
+      debouncedSaveShifts.current?.cancel();
+    };
+  }, [supabase]);
+  
   // 従業員データの読み込み
   useEffect(() => {
     const fetchEmployees = async () => {
+      // メモリキャッシュがあれば再利用
+      if (employees.length > 0) return;
+      
       try {
         if (!supabase) {
           console.warn('Supabaseクライアントが利用できないため、デフォルト従業員データを使用します');
@@ -95,14 +130,31 @@ export function ShiftGrid() {
     };
 
     fetchEmployees();
-  }, [supabase]);
+  }, [supabase, employees.length]);
 
   // シフトデータの読み込み
   useEffect(() => {
     const fetchData = async () => {
       setIsLoading(true);
       try {
-        // shift_cellsテーブルからデータを取得
+        if (!supabase) {
+          console.warn('Supabaseクライアントが利用できないため、シフトデータを読み込めません');
+          setIsLoading(false);
+          return;
+        }
+
+        // 月が変わったときのみデータ取得
+        const currentMonthKey = format(currentDate, 'yyyy-MM');
+        const cacheKey = `shifts_${currentMonthKey}`;
+        const cachedData = sessionStorage.getItem(cacheKey);
+        
+        if (cachedData) {
+          setShifts(JSON.parse(cachedData));
+          setIsLoading(false);
+          return;
+        }
+        
+        // キャッシュがない場合はAPIから取得
         const { data, error } = await supabase
           .from('shift_cells')
           .select('*')
@@ -111,6 +163,7 @@ export function ShiftGrid() {
 
         if (error) {
           console.error('Failed to fetch shifts:', error);
+          setIsLoading(false);
           return;
         }
 
@@ -121,6 +174,8 @@ export function ShiftGrid() {
           shiftMap[key] = entry.shift_code;
         });
 
+        // セッションストレージにキャッシュ
+        sessionStorage.setItem(cacheKey, JSON.stringify(shiftMap));
         setShifts(shiftMap);
       } catch (err) {
         console.error('Error loading shifts:', err);
@@ -132,15 +187,25 @@ export function ShiftGrid() {
     fetchData();
   }, [currentDate, supabase]);
 
-  const days = eachDayOfInterval({
+  // 日付の計算をメモ化
+  const days = useMemo(() => eachDayOfInterval({
     start: startOfMonth(currentDate),
     end: endOfMonth(currentDate),
-  });
+  }), [currentDate]);
 
-  const handlePrevMonth = () => setCurrentDate(subMonths(currentDate, 1));
-  const handleNextMonth = () => setCurrentDate(addMonths(currentDate, 1));
+  const handlePrevMonth = useCallback(() => {
+    // 月が変わる前に保留中の変更をすべて保存
+    debouncedSaveShifts.current?.flush();
+    setCurrentDate(prev => subMonths(prev, 1));
+  }, []);
+  
+  const handleNextMonth = useCallback(() => {
+    // 月が変わる前に保留中の変更をすべて保存
+    debouncedSaveShifts.current?.flush();
+    setCurrentDate(prev => addMonths(prev, 1));
+  }, []);
 
-  const handleShiftChange = async (employeeId: number, date: Date, newShift: string) => {
+  const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
@@ -150,63 +215,50 @@ export function ShiftGrid() {
       [key]: newShift
     }));
 
-    try {
-      // まず既存のデータを確認
-      const { data: existingData } = await supabase
-        .from('shift_cells')
-        .select('id')
-        .eq('employee_id', employeeId)
-        .eq('date', dateStr)
-        .maybeSingle();
-
-      if (existingData) {
-        // 既存データを更新
-        const { error } = await supabase
-          .from('shift_cells')
-          .update({ shift_code: newShift })
-          .eq('id', existingData.id);
-
-        if (error) throw error;
-      } else {
-        // 新規データを作成
-        const { error } = await supabase
-          .from('shift_cells')
-          .insert({
-            employee_id: employeeId,
-            date: dateStr,
-            shift_code: newShift
-          });
-
-        if (error) throw error;
-      }
-    } catch (err) {
-      console.error('Error saving shift:', err);
-      toast.error('シフトの保存に失敗しました');
-      
-      // エラー時に元の状態に戻す
-      setShifts(prev => {
-        const newShifts = { ...prev };
-        delete newShifts[key];
-        return newShifts;
-      });
+    // 現在の月のキャッシュを更新
+    const currentMonthKey = format(date, 'yyyy-MM');
+    const cacheKey = `shifts_${currentMonthKey}`;
+    const cachedData = sessionStorage.getItem(cacheKey);
+    if (cachedData) {
+      const updatedCache = {
+        ...JSON.parse(cachedData),
+        [key]: newShift
+      };
+      sessionStorage.setItem(cacheKey, JSON.stringify(updatedCache));
     }
-  };
 
-  const getShiftValue = (employeeId: number, date: Date) => {
+    // 保留中の更新データに追加
+    pendingShiftUpdates.current.set(key, {
+      employee_id: employeeId,
+      date: dateStr,
+      shift_code: newShift
+    });
+    
+    // 遅延保存を実行
+    debouncedSaveShifts.current?.();
+  }, []);
+
+  const getShiftValue = useCallback((employeeId: number, date: Date) => {
     const key = `${employeeId}-${format(date, 'yyyy-MM-dd')}`;
     const shift = shifts[key];
     return shift ? getUpdatedShiftCode(shift) : '−';
-  };
+  }, [shifts, getUpdatedShiftCode]);
 
-  const isWeekend = (date: Date) => {
+  // ユーティリティ関数をメモ化
+  const isWeekend = useCallback((date: Date) => {
     const day = getDay(date);
     return day === 0;
-  };
+  }, []);
 
-  const isSaturday = (date: Date) => getDay(date) === 6;
+  const isSaturday = useCallback((date: Date) => getDay(date) === 6, []);
 
-  const handleDeleteAllShifts = async () => {
+  const handleDeleteAllShifts = useCallback(async () => {
     try {
+      if (!supabase) {
+        toast.error('データベース接続がありません');
+        return;
+      }
+      
       // 現在の月のデータを削除
       const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
       const endDate = format(endOfMonth(currentDate), 'yyyy-MM-dd');
@@ -221,15 +273,28 @@ export function ShiftGrid() {
       
       // ローカルデータをクリア
       setShifts({});
+      
+      // キャッシュをクリア
+      const currentMonthKey = format(currentDate, 'yyyy-MM');
+      sessionStorage.removeItem(`shifts_${currentMonthKey}`);
+      
+      // 保留中の更新もクリア
+      pendingShiftUpdates.current.clear();
+      
       toast.success('すべてのシフトを削除しました');
     } catch (err) {
       console.error('Error deleting shifts:', err);
       toast.error('シフトの削除に失敗しました');
     }
-  };
+  }, [currentDate, supabase]);
 
-  const handleEmployeeUpdate = async (updatedEmployee: Employee) => {
+  const handleEmployeeUpdate = useCallback(async (updatedEmployee: Employee) => {
     try {
+      if (!supabase) {
+        toast.error('データベース接続がありません');
+        return;
+      }
+      
       // データベース更新
       const { error } = await supabase
         .from('employees')
@@ -251,10 +316,15 @@ export function ShiftGrid() {
       console.error('Error updating employee:', err);
       toast.error('従業員情報の更新に失敗しました');
     }
-  };
+  }, [supabase]);
 
-  const handleAddEmployee = async (newEmployee: { name: string; given_name?: string }) => {
+  const handleAddEmployee = useCallback(async (newEmployee: { name: string; given_name?: string }) => {
     try {
+      if (!supabase) {
+        toast.error('データベース接続がありません');
+        return;
+      }
+      
       // 新しい従業員をデータベースに追加
       const { data, error } = await supabase
         .from('employees')
@@ -275,12 +345,21 @@ export function ShiftGrid() {
       console.error('Error adding employee:', err);
       toast.error('従業員の追加に失敗しました');
     }
-  };
+  }, [supabase]);
 
   // すべてのデータを保存
-  const handleSaveAll = async () => {
+  const handleSaveAll = useCallback(async () => {
     setIsSaving(true);
     try {
+      if (!supabase) {
+        toast.error('データベース接続がありません');
+        setIsSaving(false);
+        return;
+      }
+      
+      // 保留中の変更をすべて保存
+      debouncedSaveShifts.current?.flush();
+      
       // 1. シフトタイプを保存
       await saveAllShiftTypes();
 
@@ -309,7 +388,7 @@ export function ShiftGrid() {
     } finally {
       setIsSaving(false);
     }
-  };
+  }, [employees, saveAllShiftTypes, supabase]);
 
   return (
     <div className="min-h-screen pb-20">

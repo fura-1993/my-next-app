@@ -1,6 +1,6 @@
 'use client';
 
-import { createContext, useContext, useState, ReactNode, useEffect } from 'react';
+import { createContext, useContext, useState, ReactNode, useEffect, useMemo, useCallback } from 'react';
 import { createBrowserClient } from '@/utils/supabase/client';
 import { toast } from 'sonner';
 
@@ -42,11 +42,44 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
   // 初回ロード時にSupabaseからシフトタイプを取得
   useEffect(() => {
     const loadShiftTypes = async () => {
+      // すでにデータがある場合は再取得しない
+      if (shiftTypes.length > 0) {
+        setIsLoading(false);
+        return;
+      }
+      
       setIsLoading(true);
+      
+      // ローカルストレージでキャッシュを確認
+      const cachedTypes = localStorage.getItem('shift_types');
+      if (cachedTypes) {
+        try {
+          const parsedTypes = JSON.parse(cachedTypes);
+          setShiftTypes(parsedTypes);
+          setIsLoading(false);
+          
+          // バックグラウンドで最新データを取得（UIをブロックしない）
+          fetchLatestShiftTypes();
+          return;
+        } catch (e) {
+          // キャッシュが壊れている場合は無視
+          console.warn('キャッシュデータの解析に失敗しました:', e);
+        }
+      }
+      
+      // キャッシュがない場合は通常の読み込み
+      await fetchLatestShiftTypes(true);
+    };
+    
+    // 最新のシフトタイプデータを取得
+    const fetchLatestShiftTypes = async (updateUI = false) => {
       try {
         if (!supabase) {
           console.warn('Supabaseクライアントが利用できないため、デフォルト値を使用します');
-          setShiftTypes(defaultShiftTypes);
+          if (updateUI) {
+            setShiftTypes(defaultShiftTypes);
+            setIsLoading(false);
+          }
           return;
         }
 
@@ -60,54 +93,88 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
         }
 
         if (data && data.length > 0) {
-          setShiftTypes(data);
+          // キャッシュを更新
+          localStorage.setItem('shift_types', JSON.stringify(data));
+          
+          if (updateUI) {
+            setShiftTypes(data);
+            setIsLoading(false);
+          }
         } else {
           console.log('シフトタイプデータが存在しないため、デフォルト値を使用します');
-          setShiftTypes(defaultShiftTypes);
+          
+          // デフォルト値をキャッシュ
+          localStorage.setItem('shift_types', JSON.stringify(defaultShiftTypes));
+          
+          if (updateUI) {
+            setShiftTypes(defaultShiftTypes);
+            setIsLoading(false);
+          }
         }
       } catch (err) {
         console.error('Error loading shift types:', err);
-        toast.error('シフトタイプの読み込みに失敗しました。デフォルト値を使用します。');
-        // エラー時はデフォルト値を使用
-        setShiftTypes(defaultShiftTypes);
-      } finally {
-        setIsLoading(false);
+        if (updateUI) {
+          toast.error('シフトタイプの読み込みに失敗しました。デフォルト値を使用します。');
+          // エラー時はデフォルト値を使用
+          setShiftTypes(defaultShiftTypes);
+          setIsLoading(false);
+        }
       }
     };
 
     loadShiftTypes();
-  }, [supabase]);
+  }, [supabase, shiftTypes.length]);
 
-  const updateShiftType = (updatedType: ShiftType) => {
+  const updateShiftType = useCallback((updatedType: ShiftType) => {
     const originalType = shiftTypes.find(t => t.id === updatedType.id || t.code === updatedType.code);
     if (originalType && originalType.code !== updatedType.code) {
       setCodeMap(prev => new Map(prev).set(originalType.code, updatedType.code));
     }
 
-    setShiftTypes(types =>
-      types.map(type => 
+    setShiftTypes(types => {
+      const updatedTypes = types.map(type => 
         (type.id === updatedType.id || type.code === originalType?.code)
           ? updatedType 
           : type
-      )
-    );
-  };
+      );
+      // キャッシュも更新
+      localStorage.setItem('shift_types', JSON.stringify(updatedTypes));
+      return updatedTypes;
+    });
+  }, [shiftTypes]);
 
-  const deleteShiftType = (typeToDelete: ShiftType) => {
-    setShiftTypes(prev => prev.filter(type => type.id !== typeToDelete.id && type.code !== typeToDelete.code));
-  };
+  const deleteShiftType = useCallback((typeToDelete: ShiftType) => {
+    setShiftTypes(prev => {
+      const updatedTypes = prev.filter(type => 
+        type.id !== typeToDelete.id && type.code !== typeToDelete.code
+      );
+      // キャッシュも更新
+      localStorage.setItem('shift_types', JSON.stringify(updatedTypes));
+      return updatedTypes;
+    });
+  }, []);
 
-  const addShiftType = (newType: ShiftType) => {
-    setShiftTypes(prev => [...prev, newType]);
-  };
+  const addShiftType = useCallback((newType: ShiftType) => {
+    setShiftTypes(prev => {
+      const updatedTypes = [...prev, newType];
+      // キャッシュも更新
+      localStorage.setItem('shift_types', JSON.stringify(updatedTypes));
+      return updatedTypes;
+    });
+  }, []);
 
-  const getUpdatedShiftCode = (oldCode: string): string => {
+  const getUpdatedShiftCode = useCallback((oldCode: string): string => {
     return codeMap.get(oldCode) || oldCode;
-  };
+  }, [codeMap]);
 
   // すべてのシフトタイプをSupabaseに保存
-  const saveAllShiftTypes = async () => {
+  const saveAllShiftTypes = useCallback(async () => {
     try {
+      if (!supabase) {
+        toast.error('データベース接続がありません');
+        return;
+      }
+      
       // 古いデータを削除
       const { error: deleteError } = await supabase
         .from('shift_types')
@@ -130,6 +197,8 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
         if (insertError) throw insertError;
       }
 
+      // キャッシュも更新
+      localStorage.setItem('shift_types', JSON.stringify(shiftTypes));
       toast.success('シフトタイプを保存しました');
       return;
     } catch (err) {
@@ -137,18 +206,29 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
       toast.error('シフトタイプの保存に失敗しました');
       throw err;
     }
-  };
+  }, [shiftTypes, supabase]);
+
+  // コンテキスト値をメモ化して不要な再レンダリングを防止
+  const contextValue = useMemo(() => ({
+    shiftTypes, 
+    updateShiftType, 
+    deleteShiftType,
+    addShiftType,
+    getUpdatedShiftCode,
+    saveAllShiftTypes,
+    isLoading
+  }), [
+    shiftTypes, 
+    updateShiftType, 
+    deleteShiftType, 
+    addShiftType, 
+    getUpdatedShiftCode, 
+    saveAllShiftTypes, 
+    isLoading
+  ]);
 
   return (
-    <ShiftTypesContext.Provider value={{ 
-      shiftTypes, 
-      updateShiftType, 
-      deleteShiftType,
-      addShiftType,
-      getUpdatedShiftCode,
-      saveAllShiftTypes,
-      isLoading
-    }}>
+    <ShiftTypesContext.Provider value={contextValue}>
       {children}
     </ShiftTypesContext.Provider>
   );
