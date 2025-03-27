@@ -1,262 +1,131 @@
 'use client';
 
-import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
-import { format } from 'date-fns';
-import { ja } from 'date-fns/locale';
-import { useShiftTypes } from '@/contexts/shift-types-context';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { useState, useRef, useCallback, memo, useMemo } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { cn } from '@/lib/utils';
+import { useShiftTypes } from '@/contexts/shift-types-context';
+import { lightenColor } from '@/lib/utils';
+import { Balloon } from './balloon';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 
 interface ShiftCellProps {
+  shift: string;
   employeeId: number;
   date: Date;
-  value: string;
+  rowType: 'even' | 'odd';
   onShiftChange: (employeeId: number, date: Date, shift: string) => void;
-  rowIndex: number;
-  rowsLength: number;
 }
 
-// 風船エフェクト用コンポーネント
-const CellBalloon = ({ isPopped, onFinish, onClick, isBlank }: { 
-  isPopped: boolean; 
-  onFinish: () => void;
-  onClick: () => void;
-  isBlank: boolean;
-}) => {
-  const balloonRef = useRef<HTMLDivElement>(null);
-  
-  useEffect(() => {
-    if (!isPopped) return;
+function ShiftCellComponent({ shift, employeeId, date, rowType, onShiftChange }: ShiftCellProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const { shiftTypes } = useShiftTypes();
+  const lastRenderTimeRef = useRef<number>(Date.now());
+
+  // セルスタイルをメモ化
+  const { cellStyle, currentType } = useMemo(() => {
+    const type = shiftTypes.find(type => type.code === shift);
+    return {
+      currentType: type,
+      cellStyle: type ? {
+        backgroundColor: lightenColor(type.color, 0.75),
+        color: type.color,
+        fontSize: '0.875rem',
+        fontWeight: '600'
+      } : undefined
+    };
+  }, [shift, shiftTypes]);
+
+  // バックグラウンドスタイルをメモ化
+  const backgroundStyle = useMemo(() => {
+    return shift !== '−' 
+      ? cellStyle 
+      : { backgroundColor: rowType === 'even' ? 'white' : 'rgb(241 245 249)' };
+  }, [shift, cellStyle, rowType]);
+
+  const handleCellClick = useCallback(() => {
+    // 短時間での連続クリックを防止（300ms以内の連続クリックは無視）
+    const now = Date.now();
+    if (now - lastRenderTimeRef.current < 300) return;
     
-    const timer = setTimeout(() => {
-      if (balloonRef.current) {
-        balloonRef.current.style.display = 'none';
-      }
-      onFinish();
-    }, 400);
+    lastRenderTimeRef.current = now;
+    setIsOpen(true);
+  }, []);
+  
+  const handleOptionClick = useCallback((e: React.MouseEvent, value: string) => {
+    e.preventDefault();
+    e.stopPropagation();
     
-    return () => clearTimeout(timer);
-  }, [isPopped, onFinish]);
-  
-  if (!isBlank || isPopped) return null;
-  
+    // 最小限のレンダリングのために条件チェック
+    if (shift !== value) {
+      onShiftChange(employeeId, date, value);
+    }
+    
+    setIsOpen(false);
+  }, [employeeId, date, onShiftChange, shift]);
+
   return (
     <div 
-      ref={balloonRef}
-      className={cn(
-        "balloon-container absolute inset-0 z-10 cursor-pointer",
-        isPopped && "popped"
-      )}
-      onClick={onClick}
+      className="w-full h-full cursor-pointer"
+      style={backgroundStyle}
     >
-      <div className="balloon">
-        <div className="balloon-body-white" />
-        <div className="balloon-highlight" />
-        <div className="balloon-highlight-secondary" />
-        <div className="balloon-tie-white" />
-      </div>
-      
-      {isPopped && (
-        <>
-          <div className="burst-ring" />
-          {Array.from({ length: 6 }).map((_, i) => (
-            <div 
-              key={i}
-              className="burst-particle"
-              style={{
-                '--angle': `${i * 60}deg`,
-                '--delay': `${i * 0.02}s`
-              } as React.CSSProperties}
-            />
-          ))}
-        </>
-      )}
-    </div>
-  );
-};
-
-// 破裂エフェクト用コンポーネント（値入力時のフィードバック）
-const BurstEffect = ({ isActive, onFinish }: { isActive: boolean; onFinish: () => void }) => {
-  const effectRef = useRef<HTMLDivElement>(null);
-  
-  useEffect(() => {
-    if (!isActive) return;
-    
-    const timer = setTimeout(() => {
-      onFinish();
-    }, 400);
-    
-    return () => clearTimeout(timer);
-  }, [isActive, onFinish]);
-  
-  if (!isActive) return null;
-  
-  return (
-    <div className="absolute inset-0 z-10 pointer-events-none">
-      <div className="burst-ring" />
-      {Array.from({ length: 6 }).map((_, i) => (
-        <div 
-          key={i}
-          className="burst-particle"
-          style={{
-            '--angle': `${i * 60}deg`,
-            '--delay': `${i * 0.02}s`
-          } as React.CSSProperties}
-        />
-      ))}
-    </div>
-  );
-};
-
-// シフトタイプに応じたカラークラスを取得する関数
-const getColorClass = (shiftCode: string, shiftTypes: any[]) => {
-  const type = shiftTypes.find(t => t.code === shiftCode);
-  if (!type) return '';
-  
-  // 色に基づいてTailwindクラスを返す
-  switch (type.code) {
-    case '日': return 'bg-red-100 text-red-800';
-    case '夜': return 'bg-indigo-100 text-indigo-800';
-    case '休': return 'bg-gray-100 text-gray-800';
-    case '有': return 'bg-emerald-100 text-emerald-800';
-    case '振': return 'bg-amber-100 text-amber-800';
-    default: return 'bg-white';
-  }
-};
-
-// シフトセルのメモ化コンポーネント - パフォーマンス最適化
-export const ShiftCell = React.memo(function ShiftCellComponent({
-  employeeId,
-  date,
-  value,
-  onShiftChange,
-  rowIndex,
-  rowsLength
-}: ShiftCellProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [lastClickTime, setLastClickTime] = useState(0);
-  const [showBurstEffect, setShowBurstEffect] = useState(false);
-  const [isPopped, setIsPopped] = useState(false);
-  
-  const { shiftTypes } = useShiftTypes();
-  
-  // 値が未設定（風船表示）か判定
-  const isBlankValue = value === '−' || value === '-';
-  
-  // 日本語の曜日名を取得
-  const dayName = format(date, 'E', { locale: ja });
-  const dayNumber = date.getDay();
-  const isWeekend = dayNumber === 0 || dayNumber === 6;
-  
-  // メモ化されたセルスタイル
-  const cellStyle = useMemo(() => {
-    const colorClass = getColorClass(value, shiftTypes);
-    
-    return cn(
-      "cell relative text-center h-10 w-10 select-none transition-all",
-      "sm:h-9 sm:w-9 md:h-8 md:w-8",
-      {
-        "bg-red-50": dayNumber === 0,
-        "bg-blue-50": dayNumber === 6,
-        [colorClass]: !isBlankValue && colorClass,
-      },
-      "text-center align-middle px-1 py-1 font-medium text-base",
-      rowIndex === rowsLength - 1 ? "border-b-2" : "",
-      "hover:bg-opacity-80"
-    );
-  }, [value, dayNumber, rowIndex, rowsLength, shiftTypes, isBlankValue]);
-  
-  // シフト変更ハンドラー - クリックスロットリング (300ms) 付き
-  const handleClick = useCallback(() => {
-    const now = Date.now();
-    
-    // クリックスロットリングで高速連打を防止 (300ms)
-    if (now - lastClickTime < 300) return;
-    
-    setLastClickTime(now);
-    
-    // 空セルの場合は風船をポップ
-    if (isBlankValue) {
-      setIsPopped(true);
-      setTimeout(() => {
-        setIsOpen(true);
-      }, 300);
-    } else {
-      setIsOpen(true);
-    }
-  }, [lastClickTime, isBlankValue]);
-  
-  const handleSelect = useCallback((shift: string) => {
-    setIsOpen(false);
-    
-    // 値が変わる場合のみエフェクト表示
-    if (value !== shift) {
-      setShowBurstEffect(true);
-    }
-    
-    // 即座に値を更新
-    onShiftChange(employeeId, date, shift);
-  }, [employeeId, date, onShiftChange, value]);
-  
-  const handleEffectFinished = useCallback(() => {
-    setShowBurstEffect(false);
-    setIsPopped(false);
-  }, []);
-  
-  const handleBalloonClick = useCallback(() => {
-    setIsPopped(true);
-    setTimeout(() => {
-      setIsOpen(true);
-    }, 300);
-  }, []);
-  
-  return (
-    <td className={cn(cellStyle, "overflow-hidden")}>
       <Popover open={isOpen} onOpenChange={setIsOpen}>
         <PopoverTrigger asChild>
-          <button
-            onClick={handleClick}
-            className={cn(
-              "w-full h-full flex items-center justify-center focus:outline-none",
-              isBlankValue && "opacity-0"
+          <div className="flex items-center justify-center h-[40px]" onClick={handleCellClick}>
+            {shift === '−' ? (
+              <div className={rowType === 'even' ? '' : 'opacity-90'}>
+                <Balloon onBurst={handleCellClick} isWhite={rowType === 'even'} />
+              </div>
+            ) : (
+              shift
             )}
-          >
-            {value}
-          </button>
-        </PopoverTrigger>
-        <PopoverContent className="w-auto p-2 min-w-max" align="center">
-          <div className="grid grid-cols-5 gap-1">
-            {shiftTypes.map((type) => (
-              <button
-                key={type.code}
-                onClick={() => handleSelect(type.code)}
-                className={cn(
-                  "w-8 h-8 rounded flex items-center justify-center",
-                  "hover:opacity-90 active:opacity-100 transition-opacity",
-                  getColorClass(type.code, shiftTypes),
-                  "text-sm font-medium"
-                )}
-              >
-                {type.code}
-              </button>
-            ))}
           </div>
-        </PopoverContent>
+        </PopoverTrigger>
+        {isOpen && ( // 条件付きレンダリングで、開いているときだけ内容を生成
+          <PopoverContent 
+            className="w-[200px] p-2 rounded-xl shadow-[0_20px_70px_-15px_rgba(0,0,0,0.3)] border-white/20 bg-white/95 backdrop-blur-sm"
+            align="center"
+          >
+            <div className="grid grid-cols-2 gap-1">
+            {shiftTypes.map((type) => (
+              <motion.button
+                key={type.code}
+                className={cn(
+                  "w-full text-center px-2 py-2 rounded-lg",
+                  "text-sm transition-transform",
+                  "hover:shadow-lg hover:translate-y-[-1px] hover:scale-[1.02]",
+                  "border border-white/10",
+                  "shadow-[0_2px_10px_-3px_rgba(0,0,0,0.1)]",
+                  "transition-all duration-150",
+                  shift === type.code && "ring-2 ring-blue-500"
+                )}
+                style={{
+                  backgroundColor: lightenColor(type.color, 0.75),
+                  color: type.color
+                }}
+                onClick={(e) => handleOptionClick(e, type.code)}
+                whileHover={{ scale: 1.05, y: -2 }}
+                whileTap={{ scale: 0.99 }}
+              >
+                <div className="font-semibold text-base">{type.code}</div>
+                <div className="text-[10px] truncate">{type.label}</div>
+              </motion.button>
+            ))}
+            </div>
+          </PopoverContent>
+        )}
       </Popover>
-      
-      {/* 風船表示（空セルの場合） */}
-      <CellBalloon 
-        isPopped={isPopped}
-        onFinish={handleEffectFinished}
-        onClick={handleBalloonClick}
-        isBlank={isBlankValue}
-      />
-      
-      {/* 値入力時のバーストエフェクト */}
-      <BurstEffect 
-        isActive={showBurstEffect} 
-        onFinish={handleEffectFinished} 
-      />
-    </td>
+    </div>
+  );
+}
+
+// Reactのメモ化でコンポーネントの再レンダリングを最適化
+export const ShiftCell = memo(ShiftCellComponent, (prevProps, nextProps) => {
+  // propsが同じなら再レンダリングしない
+  return (
+    prevProps.shift === nextProps.shift &&
+    prevProps.employeeId === nextProps.employeeId &&
+    prevProps.date.getTime() === nextProps.date.getTime() &&
+    prevProps.rowType === nextProps.rowType
+    // onShiftChangeは関数なので比較しない（恒等性が保証されない）
   );
 });

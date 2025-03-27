@@ -1,61 +1,64 @@
-'use client';
+import { createClient } from '@/utils/supabase/server';
 
-import { useState, useEffect } from 'react';
-import { Shift, getShifts, getStaff, getSymbols, getLocations, Staff, Symbol, Location } from '@/utils/localStorage';
+export const dynamic = 'force-dynamic';
 
-interface ShiftWithDetails extends Shift {
-  staff?: Staff;
-  symbol?: Symbol;
-  location?: Location;
+// 型定義
+interface Staff {
+  staff_name: string;
 }
 
-export default function ShiftsPage() {
-  const [shifts, setShifts] = useState<ShiftWithDetails[]>([]);
-  const [loading, setLoading] = useState(true);
+interface Symbol {
+  symbol_name: string;
+  symbol_color: string;
+}
 
-  useEffect(() => {
-    // データ取得処理
-    const loadData = () => {
-      try {
-        const shiftsData = getShifts();
-        const staffData = getStaff();
-        const symbolsData = getSymbols();
-        const locationsData = getLocations();
+interface Location {
+  location_name: string;
+}
 
-        // シフトデータに詳細情報を付与
-        const shiftsWithDetails = shiftsData.map(shift => {
-          const staff = staffData.find(s => s.id === shift.staff_id);
-          const symbol = shift.symbol_id ? symbolsData.find(s => s.id === shift.symbol_id) : undefined;
-          const location = shift.location_id ? locationsData.find(l => l.id === shift.location_id) : undefined;
+interface Shift {
+  id: number;
+  shift_date: string;
+  staff_id: number;
+  staff?: Staff;
+  symbol_id: number;
+  symbols?: Symbol;
+  location_id: number;
+  locations?: Location;
+}
 
-          return {
-            ...shift,
-            staff,
-            symbol,
-            location
-          };
-        });
+export default async function ShiftsPage() {
+  // サーバーサイドでSupabaseクライアントを作成
+  const supabase = createClient();
 
-        setShifts(shiftsWithDetails);
-      } catch (error) {
-        console.error('Failed to load data:', error);
-      } finally {
-        setLoading(false);
-      }
-    };
+  // shiftsテーブルからデータを取得
+  const { data: shifts, error } = await supabase
+    .from('shifts')
+    .select(`
+      id,
+      shift_date,
+      staff_id,
+      staff(staff_name),
+      symbol_id,
+      symbols(symbol_name, symbol_color),
+      location_id,
+      locations(location_name)
+    `)
+    .order('shift_date');
 
-    loadData();
-  }, []);
-
-  if (loading) {
-    return <div>Loading...</div>;
+  if (error) {
+    console.error('Failed to fetch shifts:', error);
+    return <div>Failed to load shifts</div>;
   }
+
+  // 型アサーション
+  const typedShifts = shifts as unknown as Shift[];
 
   return (
     <div className="container mx-auto p-4">
       <h1 className="text-2xl font-bold mb-4">シフト一覧</h1>
       
-      {!shifts || shifts.length === 0 ? (
+      {!typedShifts || typedShifts.length === 0 ? (
         <p>表示するシフトがありません</p>
       ) : (
         <div className="overflow-x-auto">
@@ -69,24 +72,24 @@ export default function ShiftsPage() {
               </tr>
             </thead>
             <tbody>
-              {shifts.map((shift) => (
+              {typedShifts.map((shift) => (
                 <tr key={shift.id}>
                   <td className="py-2 px-4 border">{new Date(shift.shift_date).toLocaleDateString('ja-JP')}</td>
                   <td className="py-2 px-4 border">{shift.staff?.staff_name || '未設定'}</td>
                   <td className="py-2 px-4 border">
-                    {shift.symbol ? (
+                    {shift.symbols ? (
                       <span 
                         className="px-2 py-1 rounded" 
                         style={{ 
-                          backgroundColor: `${shift.symbol.symbol_color}20`,
-                          color: shift.symbol.symbol_color
+                          backgroundColor: `${shift.symbols.symbol_color}20`,
+                          color: shift.symbols.symbol_color
                         }}
                       >
-                        {shift.symbol.symbol_name}
+                        {shift.symbols.symbol_name}
                       </span>
                     ) : '未設定'}
                   </td>
-                  <td className="py-2 px-4 border">{shift.location?.location_name || '未設定'}</td>
+                  <td className="py-2 px-4 border">{shift.locations?.location_name || '未設定'}</td>
                 </tr>
               ))}
             </tbody>

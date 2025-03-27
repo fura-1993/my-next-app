@@ -1,11 +1,25 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { createBrowserClient } from '@/utils/supabase/client';
 import { useRouter } from 'next/navigation';
-import { 
-  getStaff, getSymbols, getLocations, saveShift,
-  Staff, Symbol, Location
-} from '@/utils/localStorage';
+
+// 型定義
+interface Staff {
+  id: number;
+  staff_name: string;
+}
+
+interface Symbol {
+  id: number;
+  symbol_name: string;
+  symbol_color: string;
+}
+
+interface Location {
+  id: number;
+  location_name: string;
+}
 
 export default function AddShiftPage() {
   const [date, setDate] = useState<string>('');
@@ -21,20 +35,40 @@ export default function AddShiftPage() {
   const [symbolList, setSymbolList] = useState<Symbol[]>([]);
   const [locationList, setLocationList] = useState<Location[]>([]);
   
+  const supabase = createBrowserClient();
   const router = useRouter();
 
   // マスターデータのロード
   useEffect(() => {
-    function loadMasterData() {
+    async function loadMasterData() {
       try {
-        // ローカルストレージからデータ取得
-        const staffData = getStaff();
-        const symbolData = getSymbols();
-        const locationData = getLocations();
+        // スタッフデータの取得
+        const { data: staffData, error: staffError } = await supabase
+          .from('staff')
+          .select('id, staff_name')
+          .order('staff_name');
         
+        if (staffError) throw new Error(`Staff data error: ${staffError.message}`);
         setStaffList(staffData || []);
+        
+        // シンボルデータの取得
+        const { data: symbolData, error: symbolError } = await supabase
+          .from('symbols')
+          .select('id, symbol_name, symbol_color')
+          .order('symbol_name');
+        
+        if (symbolError) throw new Error(`Symbol data error: ${symbolError.message}`);
         setSymbolList(symbolData || []);
+        
+        // 勤務地データの取得
+        const { data: locationData, error: locationError } = await supabase
+          .from('locations')
+          .select('id, location_name')
+          .order('location_name');
+        
+        if (locationError) throw new Error(`Location data error: ${locationError.message}`);
         setLocationList(locationData || []);
+        
       } catch (err) {
         console.error('Error loading master data:', err);
         setError('マスターデータの読み込みに失敗しました');
@@ -42,7 +76,7 @@ export default function AddShiftPage() {
     }
     
     loadMasterData();
-  }, []);
+  }, [supabase]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -56,13 +90,18 @@ export default function AddShiftPage() {
     setError(null);
     
     try {
-      // ローカルストレージにシフトデータを保存
-      saveShift({
-        shift_date: date,
-        staff_id: staffId,
-        symbol_id: symbolId,
-        location_id: locationId
-      });
+      // シフトデータの挿入
+      const { data, error: insertError } = await supabase
+        .from('shifts')
+        .insert({
+          shift_date: date,
+          staff_id: staffId,
+          symbol_id: symbolId,
+          location_id: locationId
+        })
+        .select();
+      
+      if (insertError) throw new Error(insertError.message);
       
       setSuccess(true);
       
@@ -181,10 +220,10 @@ export default function AddShiftPage() {
         <div className="flex items-center justify-between">
           <button
             type="submit"
-            className={`bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline ${isLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded focus:outline-none focus:shadow-outline"
             disabled={isLoading}
           >
-            {isLoading ? '保存中...' : 'シフトを登録'}
+            {isLoading ? '登録中...' : 'シフトを登録'}
           </button>
           
           <button
