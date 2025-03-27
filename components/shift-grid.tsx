@@ -13,12 +13,12 @@ import { useShiftTypes } from '@/contexts/shift-types-context';
 import { Trash2, UserCog, Save, RotateCcw, Download } from 'lucide-react';
 import { EmployeeCreator } from './employee-creator';
 import { EmployeeEditor } from './employee-editor';
-import { createBrowserClient } from '@/utils/supabase/client';
 import { toast } from 'sonner';
+import { getFromStorage, saveToStorage } from '@/utils/localStorage';
 
 // 型定義
 interface ShiftEntry {
-  id?: number;
+  id: number;
   employee_id: number;
   date: string;
   shift_code: string;
@@ -48,9 +48,13 @@ const initialEmployees = [
   { id: 8, name: '小林', givenName: '利治' },
 ];
 
+// ローカルストレージキー
+const SHIFTS_STORAGE_KEY = 'jatrack_shift_grid';
+const EMPLOYEES_STORAGE_KEY = 'jatrack_employees';
+
 // キャッシュ有効期限 (2週間)
 const CACHE_TTL = 14 * 24 * 60 * 60 * 1000;
-// データベース操作の最小ブロック時間 (ms) - UIちらつき防止
+// データ操作の最小ブロック時間 (ms) - UIちらつき防止
 const MIN_DB_OPERATION_TIME = 500;
 
 // 従業員行コンポーネント（メモ化）
@@ -251,9 +255,6 @@ export function ShiftGrid() {
   // WebWorkerの代わりにTaskQueueを使用
   const taskQueueRef = useRef(new TaskQueue());
   
-  // メモ化したSupabaseクライアント - コンポーネントライフサイクル中1回だけ生成
-  const supabase = useMemo(() => createBrowserClient(), []);
-
   // 処理ブロックのフラグ
   const isProcessingRef = useRef(false);
   // 保存待ちの変更を管理するRef
@@ -271,6 +272,17 @@ export function ShiftGrid() {
   const initialLoadDoneRef = useRef<{[key: string]: boolean}>({});
   // 指定された月のデータロード中フラグ
   const isLoadingMonthRef = useRef<{[key: string]: boolean}>({});
+
+  // 初期ロード: 従業員データをローカルストレージから読み込む
+  useEffect(() => {
+    const storedEmployees = getFromStorage<Employee[]>(EMPLOYEES_STORAGE_KEY, initialEmployees);
+    setEmployees(storedEmployees);
+  }, []);
+
+  // 従業員データが変更されたらローカルストレージに保存
+  useEffect(() => {
+    saveToStorage(EMPLOYEES_STORAGE_KEY, employees);
+  }, [employees]);
 
   // カスタムイベントリスナーをセットアップ
   useEffect(() => {
@@ -312,7 +324,7 @@ export function ShiftGrid() {
 
   // データ読み込み - 完全に手動操作のみ（初回読み込みは除く）
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
-    // データベース操作中は何もしない（UIブロック回避）
+    // データ操作中は何もしない（UIブロック回避）
     if (isSaving || isLoading) return;
     
     const monthKey = format(date, 'yyyy-MM');
@@ -337,25 +349,16 @@ export function ShiftGrid() {
     }
     
     try {
-      // データベース操作中フラグON
+      // データ操作中フラグON
       setIsLoading(true);
       isLoadingMonthRef.current[monthKey] = true;
       
       // 最低限の処理時間を確保して応答感向上
       const startTime = Date.now();
       
-      // 大きなバッチサイズでデータ取得
-      const { data, error } = await supabase
-        .from('shift_cells')
-        .select('*')
-        .gte('date', format(startOfMonth(date), 'yyyy-MM-dd'))
-        .lte('date', format(endOfMonth(date), 'yyyy-MM-dd'));
-
-      if (error) {
-        console.error('Failed to fetch shifts:', error);
-        toast.error('データの取得に失敗しました');
-        return;
-      }
+      // ローカルストレージからデータを取得
+      const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
+      const storedData = getFromStorage<ShiftEntry[]>(storageKey, []);
 
       // ブロッキング時間を最低限確保（UXのため）
       const elapsedTime = Date.now() - startTime;
@@ -365,40 +368,34 @@ export function ShiftGrid() {
 
       // 高速化したデータ変換（プリアロケーション）
       const shiftMap: { [key: string]: string } = {};
-      if (data) {
-        // データが多い場合は即座に空のマップをセット
-        if (data.length > 200) {
-          setShifts({});
-        }
-        
-        // バックグラウンドでの非同期データ変換
-        taskQueueRef.current.add(async () => {
-          if (data) {
-            for (let i = 0; i < data.length; i++) {
-              const entry = data[i];
-              const key = `${entry.employee_id}-${entry.date}`;
-              shiftMap[key] = entry.shift_code;
-            }
-          }
-          
-          // キャッシュに保存
-          shiftsCache.current[monthKey] = {
-            data: { ...shiftMap },
-            timestamp: Date.now()
-          };
-          
-          // レンダリング最適化：必要な場合のみ更新
-          setShifts(prev => {
-            const isEqual = Object.keys(prev).length === Object.keys(shiftMap).length && 
-              Object.keys(prev).every(key => prev[key] === shiftMap[key]);
-            
-            return isEqual ? prev : shiftMap;
-          });
-        });
-      } else {
-        // データがない場合は空オブジェクトをセット
+      
+      // データが多い場合は即座に空のマップをセット
+      if (storedData.length > 200) {
         setShifts({});
       }
+      
+      // バックグラウンドでの非同期データ変換
+      taskQueueRef.current.add(async () => {
+        for (let i = 0; i < storedData.length; i++) {
+          const entry = storedData[i];
+          const key = `${entry.employee_id}-${entry.date}`;
+          shiftMap[key] = entry.shift_code;
+        }
+        
+        // キャッシュに保存
+        shiftsCache.current[monthKey] = {
+          data: { ...shiftMap },
+          timestamp: Date.now()
+        };
+        
+        // レンダリング最適化：必要な場合のみ更新
+        setShifts(prev => {
+          const isEqual = Object.keys(prev).length === Object.keys(shiftMap).length && 
+            Object.keys(prev).every(key => prev[key] === shiftMap[key]);
+          
+          return isEqual ? prev : shiftMap;
+        });
+      });
       
       initialLoadDoneRef.current[monthKey] = true;
     } catch (err) {
@@ -408,7 +405,7 @@ export function ShiftGrid() {
       setIsLoading(false);
       isLoadingMonthRef.current[monthKey] = false;
     }
-  }, [supabase, isSaving, isLoading]);
+  }, [isSaving, isLoading]);
 
   // 初回レンダリング時のみデータを読み込む
   useEffect(() => {
@@ -446,7 +443,7 @@ export function ShiftGrid() {
 
   // データの手動更新（ボタンクリック時のみ実行）
   const handleRefreshData = useCallback(() => {
-    // データベース操作中は何もしない
+    // データ操作中は何もしない
     if (isLoading || isSaving) return;
     
     // 未保存の変更がある場合は確認
@@ -463,7 +460,7 @@ export function ShiftGrid() {
 
   // 保存処理（すべての変更を保存 - ボタンクリック時のみ実行）
   const saveAllChanges = useCallback(async () => {
-    // 保存するデータがない場合やデータベース操作中は何もしない
+    // 保存するデータがない場合やデータ操作中は何もしない
     if (pendingChangesRef.current.size === 0 || isLoading || isSaving) return;
     
     try {
@@ -472,86 +469,48 @@ export function ShiftGrid() {
       const startTime = Date.now();
       const changes = Array.from(pendingChangesRef.current.values());
       
-      // バッチ処理のための準備
-      const updateBatch: { id: number; shift_code: string }[] = [];
-      const insertBatch: Omit<ShiftEntry, 'id'>[] = [];
-      const processingPromises = [];
+      // 月ごとにグループ化
+      const changesByMonth: { [monthKey: string]: ShiftEntry[] } = {};
       
-      // 既存データの検索（並列クエリで高速化）
+      // 既存データをローカルストレージから取得
       for (const change of changes) {
-        processingPromises.push(
-          supabase
-            .from('shift_cells')
-            .select('id')
-            .eq('employee_id', change.employeeId)
-            .eq('date', change.date)
-            .single()
-            .then(({ data, error }) => {
-              if (!error && data) {
-                updateBatch.push({ 
-                  id: data.id, 
-                  shift_code: change.shift 
-                });
-              } else {
-                insertBatch.push({
-                  employee_id: change.employeeId,
-                  date: change.date,
-                  shift_code: change.shift
-                });
-              }
-            })
-            // 明示的にPromiseベースのエラーハンドリング
-            .then(undefined, () => {
-              // エラー時は挿入処理へ
-              insertBatch.push({
-                employee_id: change.employeeId,
-                date: change.date,
-                shift_code: change.shift
-              });
-            })
+        const date = new Date(change.date);
+        const monthKey = format(date, 'yyyy-MM');
+        const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
+        
+        // 月ごとのデータを初期化
+        if (!changesByMonth[monthKey]) {
+          const existingData = getFromStorage<ShiftEntry[]>(storageKey, []);
+          changesByMonth[monthKey] = existingData;
+        }
+        
+        // 該当データが既に存在するか確認
+        const existingEntryIndex = changesByMonth[monthKey].findIndex(
+          entry => entry.employee_id === change.employeeId && entry.date === change.date
         );
-      }
-      
-      // すべての検索処理を完了
-      await Promise.all(processingPromises);
-      
-      // 更新処理のバッチ実行（並列処理で高速化）
-      const BATCH_SIZE = 250; // 大きなバッチサイズで効率化
-      const updatePromises = [];
-      
-      // 更新操作をバッチ処理
-      if (updateBatch.length > 0) {
-        for (let i = 0; i < updateBatch.length; i += BATCH_SIZE) {
-          const batch = updateBatch.slice(i, i + BATCH_SIZE);
-          
-          // 個別のUPDATE文を並列実行
-          const batchPromises = batch.map(item => 
-            supabase
-              .from('shift_cells')
-              .update({ shift_code: item.shift_code })
-              .eq('id', item.id)
-          );
-          
-          updatePromises.push(Promise.all(batchPromises));
+        
+        // 存在すれば更新、なければ追加
+        if (existingEntryIndex >= 0) {
+          changesByMonth[monthKey][existingEntryIndex].shift_code = change.shift;
+        } else {
+          const newId = changesByMonth[monthKey].length > 0 
+            ? Math.max(...changesByMonth[monthKey].map(item => item.id)) + 1 
+            : 1;
+            
+          changesByMonth[monthKey].push({
+            id: newId,
+            employee_id: change.employeeId,
+            date: change.date,
+            shift_code: change.shift
+          });
         }
       }
       
-      // 挿入処理（バッチ実行・拡張）
-      if (insertBatch.length > 0) {
-        for (let i = 0; i < insertBatch.length; i += BATCH_SIZE) {
-          const batch = insertBatch.slice(i, i + BATCH_SIZE);
-          updatePromises.push(
-            supabase
-              .from('shift_cells')
-              .insert(batch)
-          );
-        }
-      }
-      
-      if (updatePromises.length > 0) {
-        // すべての更新と挿入を並列実行
-        await Promise.all(updatePromises);
-      }
+      // 各月のデータを保存
+      Object.entries(changesByMonth).forEach(([monthKey, data]) => {
+        const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
+        saveToStorage(storageKey, data);
+      });
       
       // ブロッキング時間確保（UX改善）
       const elapsedTime = Date.now() - startTime;
@@ -586,24 +545,24 @@ export function ShiftGrid() {
     } finally {
       setIsSaving(false);
     }
-  }, [supabase, currentMonthKey, isLoading, isSaving]);
+  }, [currentMonthKey, isLoading, isSaving]);
 
-  // シフト変更時のハンドラ - ローカル状態のみ変更・データベース通信なし
+  // シフト変更時のハンドラ - ローカル状態のみ変更
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
-    // UIの入力は常に許可（データベース通信なし）
+    // UIの入力は常に許可
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
     // 同じ値なら何もしない（無駄な処理を回避）
     if (shiftsRef.current[key] === newShift) return;
     
-    // UIの即時更新（直接変更で高速化）- データベース通信なし
+    // UIの即時更新（直接変更で高速化）
     setShifts(prev => {
       const updated = { ...prev, [key]: newShift };
       return updated;
     });
 
-    // 保存待ちリストに追加（ローカルのみ・非同期でデータベース通信なし）
+    // 保存待ちリストに追加（ローカルのみ）
     pendingChangesRef.current.set(key, {
       employeeId,
       date: dateStr,
@@ -628,14 +587,11 @@ export function ShiftGrid() {
       const startTime = Date.now();
       
       // 現在の月のデータを削除
-      const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
-      const endDate = format(endOfMonth(currentDate), 'yyyy-MM-dd');
+      const monthKey = format(currentDate, 'yyyy-MM');
+      const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
       
-      await supabase
-        .from('shift_cells')
-        .delete()
-        .gte('date', startDate)
-        .lte('date', endDate);
+      // ローカルストレージから削除
+      saveToStorage(storageKey, []);
       
       // ブロッキング時間確保（UX改善）
       const elapsedTime = Date.now() - startTime;
@@ -660,7 +616,7 @@ export function ShiftGrid() {
     } finally {
       setIsLoading(false);
     }
-  }, [currentDate, supabase, currentMonthKey, isLoading, isSaving]);
+  }, [currentDate, currentMonthKey, isLoading, isSaving]);
 
   // 従業員関連の処理
   const handleEmployeeUpdate = useCallback((updatedEmployee: Employee) => {
