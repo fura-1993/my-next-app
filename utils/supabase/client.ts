@@ -1,4 +1,4 @@
-import { createBrowserClient } from '@supabase/ssr';
+import { createBrowserClient as createClient } from '@supabase/ssr';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 // データプリフェッチ用のキャッシュ
@@ -48,7 +48,7 @@ export const getClient = async (): Promise<SupabaseClient> => {
       }
       
       // 新しいブラウザクライアントを作成
-      clientInstance = createBrowserClient(
+      clientInstance = createClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL,
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
         {
@@ -91,7 +91,7 @@ export const getClient = async (): Promise<SupabaseClient> => {
       // エラーが発生した場合は最もシンプルな方法でクライアントを生成
       try {
         if (!clientInstance && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-          clientInstance = createBrowserClient(
+          clientInstance = createClient(
             process.env.NEXT_PUBLIC_SUPABASE_URL,
             process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
           );
@@ -180,4 +180,28 @@ export const clearCache = (keyPattern?: string) => {
   } else {
     Object.keys(dataCache).forEach(key => delete dataCache[key]);
   }
-}; 
+};
+
+// メインのcreateBrowserClient関数 - これが各コンポーネントから呼び出される
+export const createBrowserClient = () => {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+    console.error('Supabase環境変数が設定されていません');
+    throw new Error('Supabase環境変数が設定されていません');
+  }
+  
+  return createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+    {
+      // ブラウザ環境でのクッキーアクセス設定
+      cookies: {
+        get(name) {
+          if (typeof document === 'undefined') return undefined;
+          const cookies = document.cookie.split(';').map(c => c.trim());
+          const cookie = cookies.find(c => c.startsWith(`${name}=`));
+          return cookie ? cookie.split('=')[1] : undefined;
+        }
+      }
+    }
+  );
+} 
