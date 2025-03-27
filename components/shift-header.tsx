@@ -7,6 +7,7 @@ import { ja } from 'date-fns/locale';
 import { useShiftTypes } from '@/contexts/shift-types-context';
 import { useState } from 'react';
 import { useToast } from '@/components/ui/use-toast';
+import { EmailComposer } from './email-composer';
 
 interface ShiftHeaderProps {
   currentDate: Date;
@@ -19,6 +20,7 @@ interface ShiftHeaderProps {
 export function ShiftHeader({ currentDate, shifts, employees, onPrevMonth, onNextMonth }: ShiftHeaderProps) {
   const { shiftTypes } = useShiftTypes();
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  const [isEmailOpen, setIsEmailOpen] = useState(false);
   const { toast } = useToast();
 
   const handlePDFDownload = async () => {
@@ -106,6 +108,7 @@ export function ShiftHeader({ currentDate, shifts, employees, onPrevMonth, onNex
           <Button
             className="button-3d bg-gradient-to-b from-blue-500 via-blue-600 to-blue-700 hover:from-blue-600 hover:via-blue-700 hover:to-blue-800 text-white border-none shadow-[0_4px_10px_-2px_rgba(59,130,246,0.5)]"
             size="sm"
+            onClick={() => setIsEmailOpen(true)}
           >
             <span className="icon-wrapper">
               <Mail className="h-4 w-4 mr-1.5" />
@@ -202,6 +205,14 @@ export function ShiftHeader({ currentDate, shifts, employees, onPrevMonth, onNex
           </Button>
         </div>
       </div>
+      
+      <EmailComposer
+        open={isEmailOpen}
+        onOpenChange={setIsEmailOpen}
+        currentDate={currentDate}
+        shifts={shifts}
+        employees={employees}
+      />
     </div>
   );
 }
