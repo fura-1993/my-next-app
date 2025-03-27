@@ -146,10 +146,11 @@ const EmployeeRow = React.memo(({
             )}
           >
             <ShiftCell
-              shift={shift}
+              value={shift}
               employeeId={employee.id}
               date={date}
-              rowType={index % 2 === 0 ? 'even' : 'odd'}
+              rowIndex={index}
+              rowsLength={rowsLength}
               onShiftChange={handleShiftChange}
             />
           </td>
