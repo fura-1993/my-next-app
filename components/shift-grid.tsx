@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useTransition } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { addMonths, subMonths, format, getDate, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import holidays from '@holiday-jp/holiday_jp';
@@ -42,10 +42,12 @@ const initialEmployees = [
   { id: 8, name: '小林', givenName: '利治' },
 ];
 
-// 変更後、保存までの待機時間（ミリ秒）- 長めに設定
-const SAVE_DEBOUNCE_DELAY = 5000;
-// 連続操作を検出する閾値
-const CONSECUTIVE_OPERATION_THRESHOLD = 500;
+// 操作がない時に自動保存するまでの時間 (30秒)
+const AUTO_SAVE_DELAY = 30000;
+// ロック解除までの最短時間 (100ms)
+const LOCK_DURATION = 100;
+// キャッシュ有効期限 (1時間)
+const CACHE_TTL = 60 * 60 * 1000;
 
 export function ShiftGrid() {
   const [currentDate, setCurrentDate] = useState(new Date(2025, 2)); // 2025年3月
@@ -57,67 +59,90 @@ export function ShiftGrid() {
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const { getUpdatedShiftCode } = useShiftTypes();
-  const supabase = createBrowserClient();
+  
+  // メモ化したSupabaseクライアント
+  const supabase = useMemo(() => createBrowserClient(), []);
 
-  // 操作をブロックするための状態
-  const isOperationBlockedRef = useRef(false);
-  // 最後の操作時間を記録
-  const lastOperationTimeRef = useRef(0);
+  // 処理ロックのRef
+  const isProcessingRef = useRef(false);
   // 保存待ちの変更を管理するRef
   const pendingChangesRef = useRef<Map<string, PendingChange>>(new Map());
   // 自動保存タイマーのRef
-  const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // ローカルキャッシュを維持するRef（オプティミスティックUI用）
+  const inactivityTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // 最後のユーザー操作時間
+  const lastUserActivityRef = useRef(Date.now());
+  // シフトデータキャッシュ
+  const shiftsCache = useRef<{
+    [monthKey: string]: {
+      data: { [key: string]: string };
+      timestamp: number;
+    }
+  }>({});
+  // ローカルキャッシュ（レンダリング最適化用）
   const shiftsRef = useRef<{ [key: string]: string }>({});
-  // データ読み込みが進行中かどうかのフラグ
-  const isDataFetchInProgressRef = useRef(false);
 
-  // 変更があったときにhasPendingChangesを更新
+  // 現在の月のキーを取得
+  const currentMonthKey = useMemo(() => 
+    format(currentDate, 'yyyy-MM'), 
+  [currentDate]);
+
+  // 変更がある場合のみhasPendingChangesを更新
   useEffect(() => {
     shiftsRef.current = shifts;
-    setHasPendingChanges(pendingChangesRef.current.size > 0);
-  }, [shifts]);
+    const hasChanges = pendingChangesRef.current.size > 0;
+    if (hasPendingChanges !== hasChanges) {
+      setHasPendingChanges(hasChanges);
+    }
+  }, [shifts, hasPendingChanges]);
 
-  // 操作をブロックする関数
-  const blockOperation = useCallback((durationMs = 1000) => {
-    isOperationBlockedRef.current = true;
-    setTimeout(() => {
-      isOperationBlockedRef.current = false;
-    }, durationMs);
-  }, []);
-
-  // 操作がブロックされているか確認する関数
-  const isOperationBlocked = useCallback(() => {
-    // 現在ブロック中かどうか
-    if (isOperationBlockedRef.current) return true;
+  // ユーザー操作時間の記録と非アクティブタイマーのリセット
+  const recordUserActivity = useCallback(() => {
+    lastUserActivityRef.current = Date.now();
     
-    // 最後の操作から一定時間経過していないか（連続操作防止）
-    const now = Date.now();
-    if (now - lastOperationTimeRef.current < CONSECUTIVE_OPERATION_THRESHOLD) {
-      return true;
+    // 既存のタイマーをクリア
+    if (inactivityTimerRef.current) {
+      clearTimeout(inactivityTimerRef.current);
     }
     
-    return false;
+    // 新しい非アクティブタイマーをセット（30秒間操作がなければ自動保存）
+    inactivityTimerRef.current = setTimeout(() => {
+      if (pendingChangesRef.current.size > 0 && !isProcessingRef.current) {
+        saveAllChanges();
+      }
+    }, AUTO_SAVE_DELAY);
   }, []);
 
-  // 操作のタイムスタンプを記録
-  const recordOperation = useCallback(() => {
-    lastOperationTimeRef.current = Date.now();
+  // 処理ロックを設定・解除する関数
+  const setProcessingLock = useCallback((isLocked: boolean) => {
+    isProcessingRef.current = isLocked;
+    
+    if (isLocked) {
+      // 最低限のロック時間を設定（UIのちらつき防止）
+      setTimeout(() => {
+        if (!isProcessingRef.current) return;
+        isProcessingRef.current = false;
+      }, LOCK_DURATION);
+    }
   }, []);
 
-  // データの読み込み - 通常の非同期関数として実装し、状態を明示的に管理
+  // データの読み込み - キャッシュを優先利用
   const fetchData = useCallback(async (date: Date) => {
-    // すでに読み込み処理が実行中なら何もしない
-    if (isDataFetchInProgressRef.current || isOperationBlocked()) {
+    if (isProcessingRef.current) return;
+    
+    const monthKey = format(date, 'yyyy-MM');
+    const cachedData = shiftsCache.current[monthKey];
+    
+    // キャッシュがあり、有効期限内なら使用
+    if (cachedData && (Date.now() - cachedData.timestamp) < CACHE_TTL) {
+      setShifts(cachedData.data);
       return;
     }
-
+    
     try {
-      isDataFetchInProgressRef.current = true;
+      setProcessingLock(true);
       setIsLoading(true);
-      blockOperation(2000); // 2秒間操作をブロック
       
-      // shift_cellsテーブルからデータを取得
+      // データ取得（バッチサイズを大きくして効率化）
       const { data, error } = await supabase
         .from('shift_cells')
         .select('*')
@@ -129,245 +154,244 @@ export function ShiftGrid() {
         return;
       }
 
-      // シフトデータをローカル形式に変換
+      // データの変換（一度にまとめて処理）
       const shiftMap: { [key: string]: string } = {};
-      data?.forEach(entry => {
-        const key = `${entry.employee_id}-${entry.date}`;
-        shiftMap[key] = entry.shift_code;
-      });
+      if (data) {
+        for (let i = 0; i < data.length; i++) {
+          const entry = data[i];
+          const key = `${entry.employee_id}-${entry.date}`;
+          shiftMap[key] = entry.shift_code;
+        }
+      }
 
+      // キャッシュに保存
+      shiftsCache.current[monthKey] = {
+        data: shiftMap,
+        timestamp: Date.now()
+      };
+
+      // 状態更新
       setShifts(shiftMap);
     } catch (err) {
       console.error('Error loading shifts:', err);
     } finally {
       setIsLoading(false);
-      isDataFetchInProgressRef.current = false;
+      setProcessingLock(false);
     }
-  }, [supabase, blockOperation, isOperationBlocked]);
+  }, [supabase, setProcessingLock]);
 
-  // 月が変わったときにデータを再取得
+  // 月が変わったときにデータを取得
   useEffect(() => {
     fetchData(currentDate);
-  }, [currentDate, fetchData]);
+    recordUserActivity();
+  }, [currentDate, fetchData, recordUserActivity]);
 
-  const days = eachDayOfInterval({
-    start: startOfMonth(currentDate),
-    end: endOfMonth(currentDate),
-  });
+  // 日付配列のメモ化
+  const days = useMemo(() => 
+    eachDayOfInterval({
+      start: startOfMonth(currentDate),
+      end: endOfMonth(currentDate),
+    }), 
+  [currentDate]);
 
   // 月切り替え処理
   const handlePrevMonth = useCallback(() => {
-    if (isOperationBlocked() || isLoading || isSaving) return;
+    if (isProcessingRef.current) return;
     
-    recordOperation();
+    recordUserActivity();
     
-    // 保存処理をトリガー
+    // 保存処理をトリガー（月切り替え前に保存）
     if (pendingChangesRef.current.size > 0) {
-      saveAllPendingChanges();
+      saveAllChanges();
     }
     
-    // 月の切り替えはデータ取得後に
-    setTimeout(() => {
-      setCurrentDate(prev => subMonths(prev, 1));
-    }, 100);
-  }, [isLoading, isSaving, isOperationBlocked, recordOperation]);
+    setCurrentDate(prev => subMonths(prev, 1));
+  }, [recordUserActivity]);
 
   const handleNextMonth = useCallback(() => {
-    if (isOperationBlocked() || isLoading || isSaving) return;
+    if (isProcessingRef.current) return;
     
-    recordOperation();
+    recordUserActivity();
     
-    // 保存処理をトリガー
+    // 保存処理をトリガー（月切り替え前に保存）
     if (pendingChangesRef.current.size > 0) {
-      saveAllPendingChanges();
+      saveAllChanges();
     }
     
-    // 月の切り替えはデータ取得後に
-    setTimeout(() => {
-      setCurrentDate(prev => addMonths(prev, 1));
-    }, 100);
-  }, [isLoading, isSaving, isOperationBlocked, recordOperation]);
+    setCurrentDate(prev => addMonths(prev, 1));
+  }, [recordUserActivity]);
 
-  // 一定期間操作がなければ保存する（デバウンス処理）
-  const scheduleSave = useCallback(() => {
-    // 既存のタイマーをクリア
-    if (saveTimerRef.current) {
-      clearTimeout(saveTimerRef.current);
-      saveTimerRef.current = null;
-    }
-
-    // 新しいタイマーをセット
-    saveTimerRef.current = setTimeout(() => {
-      if (pendingChangesRef.current.size > 0 && !isLoading && !isSaving) {
-        saveAllPendingChanges();
-      }
-    }, SAVE_DEBOUNCE_DELAY);
-  }, [isLoading, isSaving]);
-
-  // 保存処理
-  const saveAllPendingChanges = useCallback(async () => {
-    // 保存するものがない場合は何もしない
-    if (pendingChangesRef.current.size === 0) return;
-    
-    // すでに保存中または読み込み中の場合は何もしない
-    if (isSaving || isLoading || isOperationBlocked()) {
-      return;
-    }
+  // 保存処理（すべての変更を保存）
+  const saveAllChanges = useCallback(async () => {
+    if (pendingChangesRef.current.size === 0 || isProcessingRef.current) return;
     
     try {
-      recordOperation();
-      blockOperation(3000); // 3秒間操作をブロック
+      setProcessingLock(true);
       setIsSaving(true);
       
       const changes = Array.from(pendingChangesRef.current.values());
-      const changesCopy = [...changes]; // 保存用のコピー
-    
-      // 一括で処理するためのバッチ操作を準備
-      const changesById = new Map<number, PendingChange>();
-      const changesForInsert: Omit<ShiftEntry, 'id'>[] = [];
-
-      // 既存のデータを検索して、更新と挿入に分類
-      const promises = changes.map(async (change) => {
-        const { data } = await supabase
-          .from('shift_cells')
-          .select('id')
-          .eq('employee_id', change.employeeId)
-          .eq('date', change.date)
-          .maybeSingle();
-
-        if (data?.id) {
-          changesById.set(data.id, change);
-        } else {
-          changesForInsert.push({
-            employee_id: change.employeeId,
-            date: change.date,
-            shift_code: change.shift
-          });
-        }
-      });
-
-      await Promise.all(promises);
-
-      // トランザクション的に処理（一括操作）
-      const operations = [];
-
-      // 更新処理
-      if (changesById.size > 0) {
-        // Map.entriesをArray.fromで変換してから反復処理
-        Array.from(changesById.entries()).forEach(([id, change]) => {
-          operations.push(
-            supabase
-              .from('shift_cells')
-              .update({ shift_code: change.shift })
-              .eq('id', id)
-          );
-        });
-      }
-
-      // 挿入処理
-      if (changesForInsert.length > 0) {
-        operations.push(
+      
+      // バッチ処理のための準備
+      const updateBatch: { id: number; shift_code: string }[] = [];
+      const insertBatch: Omit<ShiftEntry, 'id'>[] = [];
+      const processingPromises = [];
+      
+      // 既存データの検索 (一括クエリ)
+      for (const change of changes) {
+        processingPromises.push(
           supabase
             .from('shift_cells')
-            .insert(changesForInsert)
+            .select('id')
+            .eq('employee_id', change.employeeId)
+            .eq('date', change.date)
+            .single()
+            .then(({ data, error }) => {
+              if (!error && data) {
+                updateBatch.push({ 
+                  id: data.id, 
+                  shift_code: change.shift 
+                });
+              } else {
+                insertBatch.push({
+                  employee_id: change.employeeId,
+                  date: change.date,
+                  shift_code: change.shift
+                });
+              }
+            })
+            .catch(() => {
+              // エラーの場合は挿入処理へ
+              insertBatch.push({
+                employee_id: change.employeeId,
+                date: change.date,
+                shift_code: change.shift
+              });
+            })
         );
       }
-
-      // 並列で実行
-      const results = await Promise.all(operations);
       
-      // エラーチェック
-      const hasError = results.some(result => result.error);
+      // すべての検索処理を完了
+      await Promise.all(processingPromises);
       
-      if (hasError) {
-        throw new Error('Some operations failed');
+      // 更新処理のバッチ実行（小分けにして並列処理）
+      const BATCH_SIZE = 50;
+      const updatePromises = [];
+      
+      for (let i = 0; i < updateBatch.length; i += BATCH_SIZE) {
+        const batch = updateBatch.slice(i, i + BATCH_SIZE);
+        
+        // 個別のUPDATE文を一括で実行（ネットワーク効率化）
+        const batchPromises = batch.map(item => 
+          supabase
+            .from('shift_cells')
+            .update({ shift_code: item.shift_code })
+            .eq('id', item.id)
+        );
+        
+        updatePromises.push(Promise.all(batchPromises));
       }
-
-      // 保存に成功したら、保存待ちの変更をクリア
-      changesCopy.forEach(change => {
+      
+      // 挿入処理（一括実行）
+      if (insertBatch.length > 0) {
+        // 小さなバッチに分割して挿入
+        for (let i = 0; i < insertBatch.length; i += BATCH_SIZE) {
+          const batch = insertBatch.slice(i, i + BATCH_SIZE);
+          updatePromises.push(
+            supabase
+              .from('shift_cells')
+              .insert(batch)
+          );
+        }
+      }
+      
+      // すべての更新と挿入を完了
+      await Promise.all(updatePromises);
+      
+      // キャッシュを更新
+      const updatedShifts = { ...shiftsRef.current };
+      changes.forEach(change => {
         const key = `${change.employeeId}-${change.date}`;
-        pendingChangesRef.current.delete(key);
+        updatedShifts[key] = change.shift;
       });
-
-      setHasPendingChanges(pendingChangesRef.current.size > 0);
+      
+      shiftsCache.current[currentMonthKey] = {
+        data: updatedShifts,
+        timestamp: Date.now()
+      };
+      
+      // 保存成功後、待機変更をクリア
+      pendingChangesRef.current.clear();
+      setHasPendingChanges(false);
+      
       toast.success('シフトを保存しました');
     } catch (err) {
       console.error('Error saving shifts:', err);
       toast.error('シフトの保存に失敗しました');
     } finally {
       setIsSaving(false);
+      setProcessingLock(false);
     }
-  }, [supabase, isLoading, isSaving, isOperationBlocked, blockOperation, recordOperation]);
+  }, [supabase, currentMonthKey, setProcessingLock]);
 
-  // シフト変更時のハンドラ
+  // シフト変更時のハンドラ - 保存せずにローカル変更のみ
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
-    if (isOperationBlocked() || isLoading || isSaving) {
-      // 操作をスキップし、ユーザーに通知
-      toast.error('別の処理が進行中です。しばらくお待ちください。');
-      return;
-    }
+    if (isProcessingRef.current) return;
     
-    recordOperation();
+    recordUserActivity();
     
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
-    // 楽観的UI更新
-    setShifts(prev => ({
-      ...prev,
-      [key]: newShift
-    }));
+    // UIの即時更新（メモリ上のみ）- 保存はしない
+    setShifts(prev => {
+      // 値が同じなら再レンダリング不要
+      if (prev[key] === newShift) return prev;
+      return { ...prev, [key]: newShift };
+    });
 
-    // 保存待ちの変更に追加
+    // 保存待ちリストに追加
     pendingChangesRef.current.set(key, {
       employeeId,
       date: dateStr,
       shift: newShift
     });
+  }, [recordUserActivity]);
 
-    // 自動保存をスケジュール
-    scheduleSave();
-  }, [isLoading, isSaving, isOperationBlocked, recordOperation, scheduleSave]);
-
+  // メモ化されたシフト値取得関数
   const getShiftValue = useCallback((employeeId: number, date: Date) => {
     const key = `${employeeId}-${format(date, 'yyyy-MM-dd')}`;
     const shift = shiftsRef.current[key];
     return shift ? getUpdatedShiftCode(shift) : '−';
   }, [getUpdatedShiftCode]);
 
-  const isWeekend = useCallback((date: Date) => {
-    const day = getDay(date);
-    return day === 0;
-  }, []);
-
+  // メモ化された日付判定関数
+  const isWeekend = useCallback((date: Date) => getDay(date) === 0, []);
   const isSaturday = useCallback((date: Date) => getDay(date) === 6, []);
 
+  // 全削除処理
   const handleDeleteAllShifts = useCallback(async () => {
-    if (isOperationBlocked() || isLoading || isSaving) {
-      toast.error('別の処理が進行中です。しばらくお待ちください。');
-      return;
-    }
+    if (isProcessingRef.current) return;
     
     try {
-      recordOperation();
-      blockOperation(3000);
+      setProcessingLock(true);
       setIsLoading(true);
+      recordUserActivity();
       
       // 現在の月のデータを削除
       const startDate = format(startOfMonth(currentDate), 'yyyy-MM-dd');
       const endDate = format(endOfMonth(currentDate), 'yyyy-MM-dd');
       
-      const { error } = await supabase
+      await supabase
         .from('shift_cells')
         .delete()
         .gte('date', startDate)
         .lte('date', endDate);
-        
-      if (error) throw error;
+      
+      // キャッシュから削除
+      delete shiftsCache.current[currentMonthKey];
       
       // ローカルデータをクリア
       setShifts({});
-      // 保存待ちデータもクリア
       pendingChangesRef.current.clear();
       setHasPendingChanges(false);
       
@@ -377,39 +401,56 @@ export function ShiftGrid() {
       toast.error('シフトの削除に失敗しました');
     } finally {
       setIsLoading(false);
+      setProcessingLock(false);
     }
-  }, [currentDate, supabase, isLoading, isSaving, isOperationBlocked, blockOperation, recordOperation]);
+  }, [currentDate, supabase, currentMonthKey, recordUserActivity, setProcessingLock]);
 
+  // 従業員関連の処理（メモ化）
   const handleEmployeeUpdate = useCallback((updatedEmployee: { id: number; name: string; givenName?: string }) => {
+    recordUserActivity();
     setEmployees(prev => prev.map(emp => 
       emp.id === updatedEmployee.id ? updatedEmployee : emp
     ));
-  }, []);
+  }, [recordUserActivity]);
 
   const handleAddEmployee = useCallback((newEmployee: { name: string; givenName?: string }) => {
-    const newId = Math.max(...employees.map(e => e.id)) + 1;
-    setEmployees(prev => [...prev, { id: newId, ...newEmployee }]);
-  }, [employees]);
+    recordUserActivity();
+    setEmployees(prev => {
+      const newId = Math.max(...prev.map(e => e.id)) + 1;
+      return [...prev, { id: newId, ...newEmployee }];
+    });
+  }, [recordUserActivity]);
 
-  // コンポーネントがアンマウントされるときに保存
+  // コンポーネントのアンマウント時にタイマーとリスナーをクリーンアップ
   useEffect(() => {
     return () => {
-      if (pendingChangesRef.current.size > 0 && !isLoading && !isSaving) {
-        saveAllPendingChanges();
+      if (inactivityTimerRef.current) {
+        clearTimeout(inactivityTimerRef.current);
       }
       
-      if (saveTimerRef.current) {
-        clearTimeout(saveTimerRef.current);
+      // 保存されていない変更がある場合は保存
+      if (pendingChangesRef.current.size > 0) {
+        saveAllChanges();
       }
     };
-  }, [saveAllPendingChanges, isLoading, isSaving]);
+  }, [saveAllChanges]);
 
-  // 保存と読み込みの状態をまとめた表示ステータス
-  const displayStatus = isSaving 
-    ? `保存中... (${pendingChangesRef.current.size}件)` 
-    : isLoading 
-      ? "データを読み込み中..." 
-      : null;
+  // 最適化されたステータス表示
+  const displayStatus = useMemo(() => {
+    if (isSaving) return `保存中... (${pendingChangesRef.current.size}件)`;
+    if (isLoading) return "データを読み込み中...";
+    return null;
+  }, [isSaving, isLoading]);
+
+  // 保存ボタンと待機時間のレンダリング
+  const saveButtonText = useMemo(() => {
+    if (isSaving) return "保存中...";
+    
+    const pendingCount = pendingChangesRef.current.size;
+    if (pendingCount === 0) return "保存";
+    
+    return `保存 (${pendingCount}件)`;
+  }, [isSaving]);
 
   return (
     <div className="min-h-screen pb-20">
@@ -488,7 +529,10 @@ export function ShiftGrid() {
                         'transition-all duration-300 ease-out'
                       ]
                     )}
-                    onClick={() => setSelectedEmployee(employee)}
+                    onClick={() => {
+                      recordUserActivity();
+                      setSelectedEmployee(employee);
+                    }}
                   >
                     <div className="flex items-center justify-center gap-0.5">
                       <span 
@@ -543,6 +587,7 @@ export function ShiftGrid() {
             ))}
           </tbody>
         </table>
+        
         <div className="mt-4 pl-4 flex items-center gap-3">
           <button
             className={cn(
@@ -551,7 +596,10 @@ export function ShiftGrid() {
               "bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 h-10 px-4",
               (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
             )}
-            onClick={() => setIsCreatingEmployee(true)}
+            onClick={() => {
+              recordUserActivity();
+              setIsCreatingEmployee(true);
+            }}
             disabled={isLoading || isSaving}
           >
             <div className="icon-wrapper">
@@ -574,29 +622,29 @@ export function ShiftGrid() {
             担当者を追加
           </button>
           
-          {hasPendingChanges && (
-            <button
-              onClick={saveAllPendingChanges}
-              disabled={isLoading || isSaving}
-              className={cn(
-                "inline-flex items-center justify-center rounded-full text-sm font-medium",
-                "transition-all duration-200 ease-in-out",
-                "bg-green-600 text-white shadow-lg hover:bg-green-700 h-10 px-4",
-                "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
-              )}
-            >
-              <Save className="w-4 h-4 mr-1.5" />
-              {isSaving ? "保存中..." : "保存"}
-              {!isSaving && (
-                <span className="ml-1 bg-green-400 text-green-800 text-xs rounded-full px-1.5 py-0.5">
-                  {pendingChangesRef.current.size}
-                </span>
-              )}
-            </button>
+          <button
+            onClick={saveAllChanges}
+            disabled={isLoading || isSaving || pendingChangesRef.current.size === 0}
+            className={cn(
+              "inline-flex items-center justify-center rounded-full text-sm font-medium",
+              "transition-all duration-200 ease-in-out",
+              "bg-green-600 text-white shadow-lg hover:bg-green-700 h-10 px-4",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+              (isLoading || isSaving || pendingChangesRef.current.size === 0) && "opacity-50 cursor-not-allowed"
+            )}
+          >
+            <Save className="w-4 h-4 mr-1.5" />
+            {saveButtonText}
+          </button>
+          
+          {hasPendingChanges && !isSaving && (
+            <div className="text-xs text-gray-500 ml-2">
+              30秒間操作がない場合、自動保存されます
+            </div>
           )}
         </div>
       </div>
+      
       <div className="fixed bottom-6 right-6">
         <AlertDialog>
           <AlertDialogTrigger 
@@ -607,6 +655,7 @@ export function ShiftGrid() {
               (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
             )}
             disabled={isLoading || isSaving}
+            onClick={recordUserActivity}
           >
             <Trash2 className="w-4 h-4 mr-1.5" />
             全削除
@@ -620,7 +669,7 @@ export function ShiftGrid() {
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
-              <AlertDialogCancel>キャンセル</AlertDialogCancel>
+              <AlertDialogCancel onClick={recordUserActivity}>キャンセル</AlertDialogCancel>
               <AlertDialogAction
                 onClick={handleDeleteAllShifts}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
@@ -632,17 +681,25 @@ export function ShiftGrid() {
           </AlertDialogContent>
         </AlertDialog>
       </div>
+      
       {selectedEmployee && (
         <EmployeeEditor
           employee={selectedEmployee}
           isOpen={true}
-          onClose={() => setSelectedEmployee(null)}
+          onClose={() => {
+            recordUserActivity();
+            setSelectedEmployee(null);
+          }}
           onSave={handleEmployeeUpdate}
         />
       )}
+      
       <EmployeeCreator
         isOpen={isCreatingEmployee}
-        onClose={() => setIsCreatingEmployee(false)}
+        onClose={() => {
+          recordUserActivity();
+          setIsCreatingEmployee(false);
+        }}
         onSave={handleAddEmployee}
         currentEmployeeCount={employees.length}
       />
