@@ -116,13 +116,38 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
     try {
       setIsGenerating(true);
       
+      // デバッグ情報
+      console.log('PDF生成を開始します...');
+      console.log('ブラウザ環境:', navigator.userAgent);
+      
       // 動的にライブラリをインポート
-      const jsPDFModule = await import('jspdf');
+      console.log('jsPDFをインポート中...');
+      let jsPDFModule;
+      try {
+        jsPDFModule = await import('jspdf');
+        console.log('jsPDFのインポートに成功しました');
+      } catch (importError) {
+        console.error('jsPDFのインポートに失敗しました:', importError);
+        throw new Error(`jsPDFのインポートエラー: ${importError instanceof Error ? importError.message : '不明なエラー'}`);
+      }
+      
       const jsPDF = jsPDFModule.default;
-      const autoTableModule = await import('jspdf-autotable');
+      
+      // AutoTable
+      console.log('jspdf-autotableをインポート中...');
+      let autoTableModule;
+      try {
+        autoTableModule = await import('jspdf-autotable');
+        console.log('jspdf-autotableのインポートに成功しました');
+      } catch (importError) {
+        console.error('jspdf-autotableのインポートに失敗しました:', importError);
+        throw new Error(`jspdf-autotableのインポートエラー: ${importError instanceof Error ? importError.message : '不明なエラー'}`);
+      }
+      
       const autoTable = autoTableModule.default;
       
       // PDF設定
+      console.log('PDF設定を構成中...');
       const unit = 'mm';
       const sizes = {
         a3: orientation === 'portrait' ? [297, 420] : [420, 297],
@@ -131,97 +156,171 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
       };
       
       const size = sizes[paperSize];
-      const doc = new jsPDF({
-        orientation: orientation,
-        unit: unit,
-        format: paperSize,
-      });
+      
+      // PDFドキュメント初期化 - エラーハンドリング強化
+      console.log('PDFドキュメントを初期化中...');
+      let doc;
+      try {
+        doc = new jsPDF({
+          orientation: orientation,
+          unit: unit,
+          format: paperSize,
+          hotfixes: ["px_scaling"], // 一般的な問題のホットフィックス
+        });
+        console.log('PDFドキュメントの初期化に成功しました');
+      } catch (docError) {
+        console.error('PDFドキュメントの初期化に失敗しました:', docError);
+        throw new Error(`PDFドキュメント初期化エラー: ${docError instanceof Error ? docError.message : '不明なエラー'}`);
+      }
       
       // フォント設定
-      doc.setFont('helvetica');
+      console.log('フォントを設定中...');
+      try {
+        doc.setFont('helvetica');
+        console.log('フォント設定に成功しました');
+      } catch (fontError) {
+        console.error('フォント設定に失敗しました:', fontError);
+        // フォントエラーは致命的ではないので続行
+      }
+      
+      // テキスト安全化関数 - 日本語テキストの問題を回避
+      const safeText = (text: string | undefined | null): string => {
+        if (!text) return '';
+        // 問題が発生しやすい文字を処理
+        return String(text).replace(/[^\x00-\x7F]/g, (char) => {
+          // 日本語文字を英数字に安全に置き換え
+          return '_';
+        });
+      };
       
       // タイトル
+      console.log('タイトルを追加中...');
       if (includeHeader) {
-        const titleText = customTitle || title;
-        const dateText = format(currentDate, 'yyyy年MM月', { locale: ja });
-        
-        doc.setFontSize(18);
-        doc.text(titleText, size[0] / 2, 15, { align: 'center' });
-        doc.setFontSize(12);
-        doc.text(dateText, size[0] / 2, 22, { align: 'center' });
-        
-        if (companyName) {
-          doc.setFontSize(10);
-          doc.text(companyName, size[0] / 2, 28, { align: 'center' });
+        try {
+          const titleText = safeText(customTitle || title);
+          const dateText = format(currentDate, 'yyyy-MM', { locale: ja }); // 日付は英数字形式に
+          
+          doc.setFontSize(18);
+          doc.text(titleText, size[0] / 2, 15, { align: 'center' });
+          doc.setFontSize(12);
+          doc.text(dateText, size[0] / 2, 22, { align: 'center' });
+          
+          if (companyName) {
+            doc.setFontSize(10);
+            doc.text(safeText(companyName), size[0] / 2, 28, { align: 'center' });
+          }
+          console.log('タイトルの追加に成功しました');
+        } catch (titleError) {
+          console.error('タイトル追加中にエラーが発生しました:', titleError);
+          // タイトルエラーは致命的ではないので続行
         }
       }
       
       // シフトデータの設定
-      const startDate = startOfMonth(currentDate);
-      const endDate = endOfMonth(currentDate);
-      const days = eachDayOfInterval({ start: startDate, end: endDate });
-      
-      // テーブルヘッダー
-      const header = ['従業員'];
-      days.forEach(day => {
-        const dayOfWeek = getDay(day);
-        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-        header.push(format(day, 'd'));
-      });
-      
-      // テーブルデータ
-      const data = employees.map(employee => {
-        const row = [employee.name];
+      console.log('シフトデータを準備中...');
+      try {
+        const startDate = startOfMonth(currentDate);
+        const endDate = endOfMonth(currentDate);
+        const days = eachDayOfInterval({ start: startDate, end: endDate });
+        
+        // テーブルヘッダー
+        const header = ['Employee'];
         days.forEach(day => {
-          const shift = getShiftValue(employee.id, day);
-          row.push(shift || '');
+          header.push(format(day, 'd'));
         });
-        return row;
-      });
-      
-      // テーブル設定
-      const marginTop = includeHeader ? 35 : 15;
-      autoTable(doc, {
-        head: [header],
-        body: data,
-        startY: marginTop,
-        theme: 'grid',
-        styles: {
-          fontSize: 9,
-          cellPadding: 2,
-        },
-        headStyles: {
-          fillColor: [220, 220, 220],
-          textColor: [0, 0, 0],
-          fontStyle: 'bold',
-        },
-        columnStyles: {
-          0: { cellWidth: 30 },
-        },
-      });
+        
+        // テーブルデータ
+        console.log('従業員データを処理中...');
+        const data = employees.map(employee => {
+          const row = [safeText(employee.name)];
+          days.forEach(day => {
+            try {
+              const shift = getShiftValue(employee.id, day);
+              row.push(safeText(shift || ''));
+            } catch (shiftError) {
+              console.error(`従業員ID ${employee.id} の日付 ${format(day, 'yyyy-MM-dd')} のシフト取得中にエラーが発生しました:`, shiftError);
+              row.push('');
+            }
+          });
+          return row;
+        });
+        
+        // テーブル設定
+        console.log('テーブルを生成中...');
+        const marginTop = includeHeader ? 35 : 15;
+        try {
+          autoTable(doc, {
+            head: [header],
+            body: data,
+            startY: marginTop,
+            theme: 'grid',
+            styles: {
+              fontSize: 9,
+              cellPadding: 2,
+            },
+            headStyles: {
+              fillColor: [220, 220, 220],
+              textColor: [0, 0, 0],
+              fontStyle: 'bold',
+            },
+            columnStyles: {
+              0: { cellWidth: 30 },
+            },
+          });
+          console.log('テーブル生成に成功しました');
+        } catch (tableError) {
+          console.error('テーブル生成中にエラーが発生しました:', tableError);
+          throw new Error(`テーブル生成エラー: ${tableError instanceof Error ? tableError.message : '不明なエラー'}`);
+        }
+      } catch (dataError) {
+        console.error('シフトデータ準備中にエラーが発生しました:', dataError);
+        throw new Error(`シフトデータエラー: ${dataError instanceof Error ? dataError.message : '不明なエラー'}`);
+      }
       
       // フッター
+      console.log('フッターを追加中...');
       if (includeFooter) {
-        const pageCount = doc.getNumberOfPages();
-        for (let i = 1; i <= pageCount; i++) {
-          doc.setPage(i);
-          doc.setFontSize(8);
-          doc.text(
-            `ページ ${i} / ${pageCount} - 作成日: ${format(new Date(), 'yyyy/MM/dd HH:mm')}`,
-            size[0] / 2,
-            size[1] - 10,
-            { align: 'center' }
-          );
+        try {
+          const pageCount = doc.getNumberOfPages();
+          for (let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(8);
+            doc.text(
+              `Page ${i} / ${pageCount} - Created: ${format(new Date(), 'yyyy/MM/dd HH:mm')}`,
+              size[0] / 2,
+              size[1] - 10,
+              { align: 'center' }
+            );
+          }
+          console.log('フッター追加に成功しました');
+        } catch (footerError) {
+          console.error('フッター追加中にエラーが発生しました:', footerError);
+          // フッターエラーは致命的ではないので続行
         }
       }
       
       // PDFをダウンロード
-      doc.save(`${customTitle || title}_${format(currentDate, 'yyyy年MM月')}.pdf`);
-      
-      toast.success('PDFが正常にエクスポートされました');
+      console.log('PDFを保存中...');
+      try {
+        const filename = `${safeText(customTitle || title)}_${format(currentDate, 'yyyy-MM')}.pdf`;
+        doc.save(filename);
+        console.log('PDF保存に成功しました:', filename);
+        toast.success('PDFが正常にエクスポートされました');
+      } catch (saveError) {
+        console.error('PDF保存中にエラーが発生しました:', saveError);
+        throw new Error(`PDF保存エラー: ${saveError instanceof Error ? saveError.message : '不明なエラー'}`);
+      }
     } catch (error) {
       console.error('PDFのエクスポートに失敗しました:', error);
-      toast.error('PDF生成に失敗しました: ' + (error instanceof Error ? error.message : '未知のエラー'));
+      // エラーメッセージをより詳細に
+      let errorMessage = 'PDF生成に失敗しました';
+      if (error instanceof Error) {
+        errorMessage += `: ${error.message}`;
+        if (error.stack) {
+          console.error('エラースタック:', error.stack);
+        }
+      }
+      toast.error(errorMessage);
     } finally {
       setIsGenerating(false);
       setIsOpen(false);
