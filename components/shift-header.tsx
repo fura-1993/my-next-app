@@ -1,12 +1,9 @@
 'use client';
 
-import { ChevronLeft, ChevronRight, Mail, FileText, Share2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { format, eachDayOfInterval, startOfMonth, endOfMonth } from 'date-fns';
+import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
-import { useShiftTypes } from '@/contexts/shift-types-context';
-import { useState } from 'react';
-import { useToast } from '@/components/ui/use-toast';
 
 interface ShiftHeaderProps {
   currentDate: Date;
@@ -17,92 +14,10 @@ interface ShiftHeaderProps {
 }
 
 export function ShiftHeader({ currentDate, shifts, employees, onPrevMonth, onNextMonth }: ShiftHeaderProps) {
-  const { shiftTypes } = useShiftTypes();
-  const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
-  const { toast } = useToast();
-
-  const handlePDFDownload = async () => {
-    try {
-      setIsGeneratingPdf(true);
-      
-      // 日付の範囲を取得
-      const days = eachDayOfInterval({
-        start: startOfMonth(currentDate),
-        end: endOfMonth(currentDate),
-      });
-      
-      // APIにPOSTするデータを準備
-      const payload = {
-        currentDate: currentDate.toISOString(),
-        employees,
-        shifts,
-        shiftTypes,
-        days: days.map(day => day.toISOString()),
-      };
-      
-      // サーバーサイドAPIを呼び出し
-      const response = await fetch('/api/generate-pdf', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-      
-      if (!response.ok) {
-        throw new Error('PDF生成に失敗しました');
-      }
-      
-      // レスポンスのBlobを取得
-      const blob = await response.blob();
-      
-      // BlobからURLを作成
-      const url = URL.createObjectURL(blob);
-      
-      // リンク要素を作成してクリックを発火（ダウンロード処理）
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `シフト表_${format(currentDate, 'yyyy年M月')}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      
-      // 不要になったら削除
-      URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      
-      toast({
-        title: "PDFが生成されました",
-        description: "ダウンロードが開始されます",
-      });
-    } catch (error) {
-      console.error('PDF生成エラー:', error);
-      toast({
-        title: "エラーが発生しました",
-        description: "PDF生成中にエラーが発生しました",
-        variant: "destructive",
-      });
-    } finally {
-      setIsGeneratingPdf(false);
-    }
-  };
-
   return (
     <div>
       <div className="fixed top-0.5 left-1/2 -translate-x-1/2 z-50 flex items-center justify-center gap-1.5">
-          <Button
-            onClick={handlePDFDownload}
-            disabled={isGeneratingPdf}
-            className="button-3d bg-gradient-to-b from-red-500 via-red-600 to-red-700 hover:from-red-600 hover:via-red-700 hover:to-red-800 text-white border-none shadow-[0_4px_10px_-2px_rgba(239,68,68,0.5)]"
-            size="sm"
-          >
-            <span className="icon-wrapper">
-              <FileText className="h-4 w-4 mr-1.5" />
-            </span>
-            <span>{isGeneratingPdf ? 'PDF生成中...' : 'PDFで共有'}</span>
-            <span className="icon-wrapper">
-              <Share2 className="h-3 w-3 ml-1.5" />
-            </span>
-          </Button>
+          {/* PDF出力ボタンはshift-grid.tsxでPdfExportコンポーネントとして実装 */}
           <Button
             className="button-3d bg-gradient-to-b from-blue-500 via-blue-600 to-blue-700 hover:from-blue-600 hover:via-blue-700 hover:to-blue-800 text-white border-none shadow-[0_4px_10px_-2px_rgba(59,130,246,0.5)]"
             size="sm"
