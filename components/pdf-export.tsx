@@ -3,9 +3,8 @@
 import { useState, useRef, useEffect } from 'react';
 import { format, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
-import jsPDF from 'jspdf';
-import autoTable from 'jspdf-autotable';
-import { toPng } from 'html-to-image';
+// PDF関連のライブラリはクライアントサイドでのみ動的にインポート
+
 import { Button } from '@/components/ui/button';
 import { toast } from 'sonner';
 import {
@@ -24,31 +23,26 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
 import { FileText, Image, Download, FileCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// PDF出力のスタイル設定
-const PDF_STYLES = {
-  fontSize: 10,
-  headerFontSize: 12,
-  titleFontSize: 16,
-  primary: '#3b82f6', // ブルー
-  secondary: '#f97316', // オレンジ
-  headerBg: '#f1f5f9',
-  borderColor: '#cbd5e1',
-  evenRowBg: '#f8fafc',
-  oddRowBg: '#ffffff',
-  holidayColor: '#ef4444', // 赤色
-  saturdayColor: '#3b82f6', // 青色
-};
+// 動的なインポートのためのダミーの型定義
+// 実際のimport処理はコンポーネント内で実行
+type JsPDFType = any;
+type AutoTableType = any;
+type HtmlToImageType = any;
 
 interface PdfExportProps {
   currentDate: Date;
-  employees: Array<{ id: number; name: string; given_name?: string }>;
-  getShiftValue: (employeeId: number, date: Date) => string;
+  employees: Array<{
+    id: number;
+    name: string;
+    given_name?: string;
+  }>;
+  getShiftValue: (employeeId: number, date: Date | string) => string;
   title?: string;
 }
 
@@ -63,33 +57,30 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
   const [companyName, setCompanyName] = useState('');
   const [includeFooter, setIncludeFooter] = useState(true);
   const [customTitle, setCustomTitle] = useState(title);
+  const [isClient, setIsClient] = useState(false);
+  
+  // サーバーサイドレンダリング防止
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
   
   // プレビュー用の要素参照
   const previewRef = useRef<HTMLDivElement>(null);
   
-  // 月の日付を取得
-  const days = eachDayOfInterval({
-    start: startOfMonth(currentDate),
-    end: endOfMonth(currentDate),
-  });
-  
-  // 土日祝日判定関数
-  const isWeekend = (date: Date) => getDay(date) === 0;
-  const isSaturday = (date: Date) => getDay(date) === 6;
-  
   // 画像としてエクスポート
   const exportAsImage = async () => {
-    if (!previewRef.current) return;
+    if (!previewRef.current || !isClient || typeof window === 'undefined') {
+      toast.error('クライアント環境でのみ使用できます');
+      return;
+    }
     
     try {
       setIsGenerating(true);
       
-      // ブラウザ環境チェック
-      if (typeof window === 'undefined') {
-        throw new Error('ブラウザ環境でのみ使用できます');
-      }
+      // 動的にライブラリをインポート
+      const htmlToImage = await import('html-to-image');
       
-      const dataUrl = await toPng(previewRef.current, { 
+      const dataUrl = await htmlToImage.toPng(previewRef.current, { 
         quality: 1,
         backgroundColor: '#ffffff',
         canvasWidth: paperSize === 'a3' ? 2480 : paperSize === 'a4' ? 1754 : 1240,
@@ -99,13 +90,13 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
         }
       });
       
-      // ダウンロード用のリンク作成
+      // ダウンロードリンクを作成
       const link = document.createElement('a');
-      link.download = `${customTitle || 'シフト表'}_${format(currentDate, 'yyyy年M月')}.png`;
+      link.download = `${customTitle || title}_${format(currentDate, 'yyyy年MM月')}.png`;
       link.href = dataUrl;
       link.click();
       
-      toast.success('画像として保存しました');
+      toast.success('画像が正常にエクスポートされました');
     } catch (error) {
       console.error('画像のエクスポートに失敗しました:', error);
       toast.error('エクスポートに失敗しました: ' + (error instanceof Error ? error.message : '未知のエラー'));
@@ -116,14 +107,20 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
   };
   
   // PDFとしてエクスポート
-  const exportAsPdf = () => {
+  const exportAsPdf = async () => {
+    if (!isClient || typeof window === 'undefined') {
+      toast.error('クライアント環境でのみ使用できます');
+      return;
+    }
+    
     try {
       setIsGenerating(true);
       
-      // ブラウザ環境チェック
-      if (typeof window === 'undefined') {
-        throw new Error('ブラウザ環境でのみ使用できます');
-      }
+      // 動的にライブラリをインポート
+      const jsPDFModule = await import('jspdf');
+      const jsPDF = jsPDFModule.default;
+      const autoTableModule = await import('jspdf-autotable');
+      const autoTable = autoTableModule.default;
       
       // PDF設定
       const unit = 'mm';
@@ -133,145 +130,95 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
         a5: orientation === 'portrait' ? [148, 210] : [210, 148],
       };
       
-      // PDFドキュメント生成 - jsPDF v2.5.1のコンストラクタ形式に合わせる
+      const size = sizes[paperSize];
       const doc = new jsPDF({
         orientation: orientation,
         unit: unit,
         format: paperSize,
       });
       
-      // 日本語対応のためのワークアラウンド
-      // 実際のプロダクション環境では適切な日本語フォントを組み込む必要があります
-      const encodeJapanese = (text: string) => {
-        // 日本語文字を「？」に置き換える簡易的な対応
-        // 本番環境では適切な日本語フォント設定が必要
-        return text.replace(/[^\x00-\x7F]/g, '?');
-      };
+      // フォント設定
+      doc.setFont('helvetica');
       
-      // ヘッダー
+      // タイトル
       if (includeHeader) {
-        const pageWidth = sizes[paperSize][orientation === 'portrait' ? 0 : 1];
-        const headerHeight = 20;
+        const titleText = customTitle || title;
+        const dateText = format(currentDate, 'yyyy年MM月', { locale: ja });
         
-        // ロゴ（オプション）
-        if (includeLogo) {
-          // ロゴの描画（サンプル）
-          doc.setFillColor(PDF_STYLES.primary);
-          doc.rect(10, 10, 20, 10, 'F');
-          doc.setTextColor(255, 255, 255);
-          doc.setFontSize(PDF_STYLES.headerFontSize);
-          doc.text('LOGO', 15, 17);
-        }
+        doc.setFontSize(18);
+        doc.text(titleText, size[0] / 2, 15, { align: 'center' });
+        doc.setFontSize(12);
+        doc.text(dateText, size[0] / 2, 22, { align: 'center' });
         
-        // タイトルと日付
-        doc.setTextColor(0, 0, 0);
-        doc.setFontSize(PDF_STYLES.titleFontSize);
-        
-        // タイトルの英語表記（日本語非対応のため）
-        const monthText = format(currentDate, 'yyyy-MM');
-        doc.text(
-          `${encodeJapanese(customTitle)} - ${monthText}`,
-          includeLogo ? 40 : 10,
-          15
-        );
-        
-        // 会社名（オプション）
         if (companyName) {
-          doc.setFontSize(PDF_STYLES.headerFontSize);
-          doc.text(encodeJapanese(companyName), pageWidth - 10, 15, { align: 'right' });
+          doc.setFontSize(10);
+          doc.text(companyName, size[0] / 2, 28, { align: 'center' });
         }
-        
-        doc.setLineWidth(0.3);
-        doc.setDrawColor(PDF_STYLES.borderColor);
-        doc.line(10, headerHeight, pageWidth - 10, headerHeight);
       }
       
-      // テーブルヘッダー行
-      const headers = [
-        [
-          { content: 'Staff', styles: { halign: 'center' as 'center', fillColor: PDF_STYLES.headerBg } },
-          ...days.map((day) => ({
-            content: `${format(day, 'd')}(${format(day, 'E')})`,
-            styles: {
-              halign: 'center' as 'center',
-              fillColor: PDF_STYLES.headerBg,
-              textColor: isWeekend(day) 
-                ? PDF_STYLES.holidayColor 
-                : isSaturday(day) 
-                  ? PDF_STYLES.saturdayColor 
-                  : '#000000',
-            },
-          })),
-        ],
-      ];
+      // シフトデータの設定
+      const startDate = startOfMonth(currentDate);
+      const endDate = endOfMonth(currentDate);
+      const days = eachDayOfInterval({ start: startDate, end: endDate });
       
-      // テーブルデータ行
-      const body = employees.map((employee, index) => {
-        return [
-          // 従業員名
-          {
-            content: encodeJapanese(`${employee.name}${employee.given_name ? ` ${employee.given_name}` : ''}`),
-            styles: { 
-              fontStyle: 'bold' as 'bold',
-              fillColor: index % 2 === 0 ? PDF_STYLES.evenRowBg : PDF_STYLES.oddRowBg
-            },
-          },
-          // 各日のシフト
-          ...days.map((day) => ({
-            content: getShiftValue(employee.id, day),
-            styles: { 
-              halign: 'center' as 'center',
-              fillColor: index % 2 === 0 ? PDF_STYLES.evenRowBg : PDF_STYLES.oddRowBg
-            },
-          })),
-        ];
+      // テーブルヘッダー
+      const header = ['従業員'];
+      days.forEach(day => {
+        const dayOfWeek = getDay(day);
+        const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+        header.push(format(day, 'd'));
       });
       
-      // テーブル生成 - autoTableのシンタックスを確認
+      // テーブルデータ
+      const data = employees.map(employee => {
+        const row = [employee.name];
+        days.forEach(day => {
+          const shift = getShiftValue(employee.id, day);
+          row.push(shift || '');
+        });
+        return row;
+      });
+      
+      // テーブル設定
+      const marginTop = includeHeader ? 35 : 15;
       autoTable(doc, {
-        head: headers,
-        body: body,
-        startY: includeHeader ? 25 : 10,
+        head: [header],
+        body: data,
+        startY: marginTop,
+        theme: 'grid',
         styles: {
-          fontSize: PDF_STYLES.fontSize,
+          fontSize: 9,
           cellPadding: 2,
         },
         headStyles: {
-          fillColor: PDF_STYLES.headerBg,
-          textColor: '#000000',
-          lineWidth: 0.1,
-          lineColor: [203, 213, 225],
+          fillColor: [220, 220, 220],
+          textColor: [0, 0, 0],
+          fontStyle: 'bold',
         },
-        bodyStyles: {
-          lineWidth: 0.1,
-          lineColor: [203, 213, 225],
+        columnStyles: {
+          0: { cellWidth: 30 },
         },
-        theme: 'grid',
-        tableWidth: 'auto',
-        margin: { left: 10, right: 10 },
       });
       
       // フッター
       if (includeFooter) {
-        const pageWidth = sizes[paperSize][orientation === 'portrait' ? 0 : 1];
-        const pageHeight = sizes[paperSize][orientation === 'portrait' ? 1 : 0];
-        
-        doc.setFontSize(8);
-        doc.setTextColor(128, 128, 128);
-        
-        // 現在の日時
-        const now = new Date();
-        const dateStr = format(now, 'yyyy-MM-dd HH:mm');
-        doc.text(`Created: ${dateStr}`, 10, pageHeight - 10);
-        
-        // ページ番号
-        doc.text('1 / 1', pageWidth - 10, pageHeight - 10, { align: 'right' });
+        const pageCount = doc.getNumberOfPages();
+        for (let i = 1; i <= pageCount; i++) {
+          doc.setPage(i);
+          doc.setFontSize(8);
+          doc.text(
+            `ページ ${i} / ${pageCount} - 作成日: ${format(new Date(), 'yyyy/MM/dd HH:mm')}`,
+            size[0] / 2,
+            size[1] - 10,
+            { align: 'center' }
+          );
+        }
       }
       
-      // PDFダウンロード
-      doc.save(`${customTitle || 'shift-schedule'}_${format(currentDate, 'yyyy-MM')}.pdf`);
+      // PDFをダウンロード
+      doc.save(`${customTitle || title}_${format(currentDate, 'yyyy年MM月')}.pdf`);
       
-      toast.success('PDFとして保存しました');
+      toast.success('PDFが正常にエクスポートされました');
     } catch (error) {
       console.error('PDFのエクスポートに失敗しました:', error);
       toast.error('PDF生成に失敗しました: ' + (error instanceof Error ? error.message : '未知のエラー'));
@@ -281,7 +228,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
     }
   };
   
-  // エクスポート処理
+  // エクスポート実行
   const handleExport = () => {
     if (exportFormat === 'pdf') {
       exportAsPdf();
@@ -292,78 +239,64 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
   
   return (
     <>
-      <Button
-        onClick={() => setIsOpen(true)}
-        variant="outline"
-        className="flex items-center gap-2 bg-white hover:bg-blue-50 hover:text-blue-600 transition-colors"
-        size="sm"
-      >
-        <FileText className="h-4 w-4" />
-        <span>PDF出力</span>
-      </Button>
-      
-      <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="max-w-4xl">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-xl">
-              <FileText className="h-5 w-5 text-blue-500" />
-              シフト表のエクスポート
-            </DialogTitle>
-            <DialogDescription>
-              シフト表をPDFまたは画像として保存できます。必要な設定を選択してください。
-            </DialogDescription>
-          </DialogHeader>
+      {isClient ? (
+        <>
+          <Button
+            onClick={() => setIsOpen(true)}
+            variant="outline"
+            className="flex items-center gap-2 bg-white hover:bg-blue-50 hover:text-blue-600 transition-colors"
+            size="sm"
+          >
+            <FileText className="h-4 w-4" />
+            <span>PDF出力</span>
+          </Button>
           
-          <Tabs defaultValue="settings" className="w-full mt-4">
-            <TabsList className="grid w-full grid-cols-2">
-              <TabsTrigger value="settings" className="flex items-center gap-2">
-                <FileCheck className="h-4 w-4" />
-                出力設定
-              </TabsTrigger>
-              <TabsTrigger value="preview" className="flex items-center gap-2">
-                <Image className="h-4 w-4" />
-                プレビュー
-              </TabsTrigger>
-            </TabsList>
-            
-            <TabsContent value="settings" className="space-y-4 py-4">
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-4">
+          <Dialog open={isOpen} onOpenChange={setIsOpen}>
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle>シフト表エクスポート</DialogTitle>
+                <DialogDescription>
+                  シフト表をエクスポートする形式や設定を選択してください。
+                </DialogDescription>
+              </DialogHeader>
+              
+              <Tabs defaultValue="format" className="w-full">
+                <TabsList className="grid w-full grid-cols-3">
+                  <TabsTrigger value="format">出力形式</TabsTrigger>
+                  <TabsTrigger value="options">オプション</TabsTrigger>
+                  <TabsTrigger value="preview">プレビュー</TabsTrigger>
+                </TabsList>
+                
+                <TabsContent value="format" className="space-y-4 pt-4">
                   <div className="space-y-2">
-                    <Label htmlFor="exportFormat">エクスポート形式</Label>
+                    <Label htmlFor="export-format">出力形式</Label>
                     <Select
                       value={exportFormat}
-                      onValueChange={(value: 'pdf' | 'png') => setExportFormat(value)}
+                      onValueChange={(value) => setExportFormat(value as 'pdf' | 'png')}
                     >
-                      <SelectTrigger id="exportFormat">
-                        <SelectValue placeholder="形式を選択" />
+                      <SelectTrigger id="export-format">
+                        <SelectValue placeholder="出力形式を選択" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="pdf" className="flex items-center gap-2">
-                          <FileText className="h-4 w-4 inline-block" />
-                          PDF形式
-                        </SelectItem>
-                        <SelectItem value="png" className="flex items-center gap-2">
-                          <Image className="h-4 w-4 inline-block" />
-                          画像形式 (PNG)
-                        </SelectItem>
+                        <SelectItem value="pdf">PDF文書</SelectItem>
+                        <SelectItem value="png">PNG画像</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
                   
                   <div className="space-y-2">
-                    <Label htmlFor="paperSize">用紙サイズ</Label>
+                    <Label htmlFor="paper-size">用紙サイズ</Label>
                     <Select
                       value={paperSize}
-                      onValueChange={(value: 'a4' | 'a3' | 'a5') => setPaperSize(value)}
+                      onValueChange={(value) => setPaperSize(value as 'a4' | 'a3' | 'a5')}
                     >
-                      <SelectTrigger id="paperSize">
-                        <SelectValue placeholder="サイズを選択" />
+                      <SelectTrigger id="paper-size">
+                        <SelectValue placeholder="用紙サイズを選択" />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="a3">A3サイズ</SelectItem>
-                        <SelectItem value="a4">A4サイズ</SelectItem>
-                        <SelectItem value="a5">A5サイズ</SelectItem>
+                        <SelectItem value="a3">A3</SelectItem>
+                        <SelectItem value="a4">A4</SelectItem>
+                        <SelectItem value="a5">A5</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -372,7 +305,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
                     <Label htmlFor="orientation">向き</Label>
                     <Select
                       value={orientation}
-                      onValueChange={(value: 'portrait' | 'landscape') => setOrientation(value)}
+                      onValueChange={(value) => setOrientation(value as 'portrait' | 'landscape')}
                     >
                       <SelectTrigger id="orientation">
                         <SelectValue placeholder="向きを選択" />
@@ -383,178 +316,199 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
                       </SelectContent>
                     </Select>
                   </div>
-                </div>
+                </TabsContent>
                 
-                <div className="space-y-4">
+                <TabsContent value="options" className="space-y-4 pt-4">
                   <div className="space-y-2">
-                    <Label htmlFor="title">タイトル</Label>
+                    <Label htmlFor="custom-title">タイトル</Label>
                     <Input
-                      id="title"
+                      id="custom-title"
                       value={customTitle}
                       onChange={(e) => setCustomTitle(e.target.value)}
-                      placeholder="タイトルを入力"
+                      placeholder={title}
                     />
                   </div>
                   
-                  <div className="space-y-2">
-                    <Label htmlFor="companyName">会社名（オプション）</Label>
-                    <Input
-                      id="companyName"
-                      value={companyName}
-                      onChange={(e) => setCompanyName(e.target.value)}
-                      placeholder="会社名を入力"
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="includeHeader" className="cursor-pointer">ヘッダーを含める</Label>
+                  <div className="flex items-center space-x-2">
                     <Switch
-                      id="includeHeader"
+                      id="include-header"
                       checked={includeHeader}
                       onCheckedChange={setIncludeHeader}
                     />
+                    <Label htmlFor="include-header">ヘッダーを含める</Label>
                   </div>
                   
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="includeLogo" className="cursor-pointer">ロゴを含める</Label>
-                    <Switch
-                      id="includeLogo"
-                      checked={includeLogo}
-                      onCheckedChange={setIncludeLogo}
-                      disabled={!includeHeader}
-                    />
-                  </div>
-                  
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="includeFooter" className="cursor-pointer">フッターを含める</Label>
-                    <Switch
-                      id="includeFooter"
-                      checked={includeFooter}
-                      onCheckedChange={setIncludeFooter}
-                    />
-                  </div>
-                </div>
-              </div>
-            </TabsContent>
-            
-            <TabsContent value="preview" className="py-4">
-              <div className="flex justify-center">
-                <div
-                  ref={previewRef}
-                  className={cn(
-                    "border rounded-md p-4 bg-white",
-                    orientation === 'landscape' ? 'w-[420px] h-[297px]' : 'w-[297px] h-[420px]',
-                    paperSize === 'a3' ? 'scale-100' : paperSize === 'a5' ? 'scale-75' : 'scale-90'
-                  )}
-                  style={{
-                    transformOrigin: 'top left',
-                    overflow: 'auto',
-                  }}
-                >
-                  {/* プレビューコンテンツ */}
                   {includeHeader && (
-                    <div className="mb-4 pb-2 border-b">
-                      <div className="flex justify-between items-start">
-                        {includeLogo && (
-                          <div className="bg-blue-500 text-white h-8 w-16 flex items-center justify-center rounded">
-                            LOGO
-                          </div>
-                        )}
-                        <div className={cn("flex-1", includeLogo && "ml-4")}>
-                          <h2 className="text-lg font-bold">
-                            {customTitle || 'シフト表'} - {format(currentDate, 'yyyy年M月', { locale: ja })}
-                          </h2>
-                        </div>
-                        {companyName && (
-                          <div className="text-sm text-right">
-                            {companyName}
-                          </div>
-                        )}
+                    <div className="space-y-2">
+                      <div className="flex items-center space-x-2">
+                        <Switch
+                          id="include-logo"
+                          checked={includeLogo}
+                          onCheckedChange={setIncludeLogo}
+                        />
+                        <Label htmlFor="include-logo">ロゴを含める</Label>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        <Label htmlFor="company-name">会社名</Label>
+                        <Input
+                          id="company-name"
+                          value={companyName}
+                          onChange={(e) => setCompanyName(e.target.value)}
+                          placeholder="会社名（任意）"
+                        />
                       </div>
                     </div>
                   )}
                   
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full border-collapse border border-slate-300 text-sm">
-                      <thead>
-                        <tr className="bg-slate-100">
-                          <th className="border border-slate-300 p-1 text-center font-medium">担当者</th>
-                          {days.map((day) => (
-                            <th
-                              key={day.toString()}
-                              className={cn(
-                                "border border-slate-300 p-1 text-center font-medium text-xs",
-                                isWeekend(day) && "text-red-500",
-                                isSaturday(day) && "text-blue-500"
-                              )}
-                            >
-                              {format(day, 'd')}({format(day, 'E', { locale: ja })})
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {employees.slice(0, 5).map((employee, index) => (
-                          <tr key={employee.id} className={index % 2 === 0 ? 'bg-white' : 'bg-slate-50'}>
-                            <td className="border border-slate-300 p-1 font-medium text-left whitespace-nowrap">
-                              {employee.name}{employee.given_name ? `・${employee.given_name}` : ''}
-                            </td>
-                            {days.map((day) => (
-                              <td key={day.toString()} className="border border-slate-300 p-1 text-center">
-                                {getShiftValue(employee.id, day)}
-                              </td>
-                            ))}
-                          </tr>
-                        ))}
-                        {employees.length > 5 && (
-                          <tr>
-                            <td colSpan={days.length + 1} className="border border-slate-300 p-1 text-center">
-                              ...他 {employees.length - 5} 名
-                            </td>
-                          </tr>
-                        )}
-                      </tbody>
-                    </table>
+                  <div className="flex items-center space-x-2">
+                    <Switch
+                      id="include-footer"
+                      checked={includeFooter}
+                      onCheckedChange={setIncludeFooter}
+                    />
+                    <Label htmlFor="include-footer">フッターを含める</Label>
                   </div>
-                  
-                  {includeFooter && (
-                    <div className="mt-4 pt-2 text-xs text-slate-500 flex justify-between">
-                      <span>作成日時: {format(new Date(), 'yyyy年MM月dd日 HH:mm', { locale: ja })}</span>
-                      <span>1 / 1</span>
+                </TabsContent>
+                
+                <TabsContent value="preview" className="pt-4">
+                  <div
+                    ref={previewRef}
+                    className="border rounded p-4 bg-white"
+                    style={{
+                      maxHeight: '400px',
+                      overflow: 'auto',
+                    }}
+                  >
+                    <h2 className="text-center text-xl font-bold">{customTitle || title}</h2>
+                    <p className="text-center text-sm mb-4">
+                      {format(currentDate, 'yyyy年MM月', { locale: ja })}
+                    </p>
+                    {companyName && (
+                      <p className="text-center text-xs mb-4">{companyName}</p>
+                    )}
+                    
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse">
+                        <thead>
+                          <tr>
+                            <th className="border bg-gray-100 p-1 text-sm">従業員</th>
+                            {eachDayOfInterval({
+                              start: startOfMonth(currentDate),
+                              end: endOfMonth(currentDate),
+                            }).map((day, index) => {
+                              const dayOfWeek = getDay(day);
+                              const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+                              return (
+                                <th
+                                  key={index}
+                                  className={cn(
+                                    'border p-1 text-xs',
+                                    isWeekend ? 'bg-gray-200' : 'bg-gray-100'
+                                  )}
+                                >
+                                  {format(day, 'd')}
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {employees.slice(0, 5).map((employee, empIndex) => (
+                            <tr key={employee.id}>
+                              <td className="border p-1 text-sm font-medium">
+                                {employee.name}
+                              </td>
+                              {eachDayOfInterval({
+                                start: startOfMonth(currentDate),
+                                end: endOfMonth(currentDate),
+                              }).map((day, dayIndex) => {
+                                const shift = getShiftValue(employee.id, day);
+                                return (
+                                  <td
+                                    key={dayIndex}
+                                    className="border p-1 text-xs text-center"
+                                  >
+                                    {shift || ''}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                          {employees.length > 5 && (
+                            <tr>
+                              <td
+                                colSpan={1 + eachDayOfInterval({
+                                  start: startOfMonth(currentDate),
+                                  end: endOfMonth(currentDate),
+                                }).length}
+                                className="border p-1 text-xs text-center"
+                              >
+                                ... その他 {employees.length - 5} 人の従業員
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
                     </div>
+                    
+                    {includeFooter && (
+                      <p className="text-center text-xs mt-4">
+                        作成日: {format(new Date(), 'yyyy/MM/dd HH:mm')}
+                      </p>
+                    )}
+                  </div>
+                </TabsContent>
+              </Tabs>
+              
+              <DialogFooter className="flex space-x-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsOpen(false)}
+                  disabled={isGenerating}
+                >
+                  キャンセル
+                </Button>
+                <Button
+                  type="button"
+                  onClick={handleExport}
+                  disabled={isGenerating}
+                  className="flex items-center gap-2"
+                >
+                  {isGenerating ? (
+                    <>
+                      <div className="h-4 w-4 animate-spin rounded-full border-2 border-current border-t-transparent" />
+                      <span>生成中...</span>
+                    </>
+                  ) : exportFormat === 'pdf' ? (
+                    <>
+                      <FileCheck className="h-4 w-4" />
+                      <span>PDFを生成</span>
+                    </>
+                  ) : (
+                    <>
+                      <Image className="h-4 w-4" />
+                      <span>画像を生成</span>
+                    </>
                   )}
-                </div>
-              </div>
-            </TabsContent>
-          </Tabs>
-          
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsOpen(false)}>
-              キャンセル
-            </Button>
-            <Button 
-              onClick={handleExport} 
-              disabled={isGenerating}
-              className="bg-blue-600 hover:bg-blue-700"
-            >
-              {isGenerating ? (
-                <span className="flex items-center gap-2">
-                  <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  処理中...
-                </span>
-              ) : (
-                <span className="flex items-center gap-2">
-                  <Download className="h-4 w-4" />
-                  {exportFormat === 'pdf' ? 'PDFをダウンロード' : '画像をダウンロード'}
-                </span>
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </>
+      ) : (
+        // サーバーサイドレンダリング時はボタンだけ表示
+        <Button
+          variant="outline"
+          className="flex items-center gap-2 bg-white hover:bg-blue-50 hover:text-blue-600 transition-colors"
+          size="sm"
+          disabled
+        >
+          <FileText className="h-4 w-4" />
+          <span>PDF出力</span>
+        </Button>
+      )}
     </>
   );
 } 

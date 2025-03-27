@@ -1,0 +1,10 @@
+{
+  "buildCommand": "npm run vercel-build",
+  "installCommand": "npm ci",
+  "framework": "nextjs",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "github": {
+    "silent": true
+  }
+} 
