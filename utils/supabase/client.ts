@@ -1,5 +1,4 @@
-import { createClientComponentClient } from '@supabase/auth-helpers-nextjs';
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { createBrowserClient } from '@supabase/ssr';
 import { SupabaseClient } from '@supabase/supabase-js';
 
 // データプリフェッチ用のキャッシュ
@@ -25,7 +24,7 @@ let requestCount = 0;
 const requestTimings: number[] = [];
 
 // 最適化されたクライアント生成関数
-export const createBrowserClient = async (): Promise<SupabaseClient> => {
+export const getClient = async (): Promise<SupabaseClient> => {
   // すでにインスタンスが存在する場合は再利用
   if (clientInstance) {
     return clientInstance;
@@ -39,53 +38,46 @@ export const createBrowserClient = async (): Promise<SupabaseClient> => {
   // 初期化プロセスを開始
   isInitializing = true;
   
-  initPromise = new Promise<SupabaseClient>(async (resolve) => {
+  initPromise = new Promise<SupabaseClient>((resolve) => {
     try {
       console.log('Supabaseクライアントを初期化中...');
       const startTime = performance.now();
       
-      // 環境変数が存在する場合は直接createClientを使用
-      if (typeof window !== 'undefined' && 
-          process.env.NEXT_PUBLIC_SUPABASE_URL && 
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-        
-        clientInstance = createSupabaseClient(
-          process.env.NEXT_PUBLIC_SUPABASE_URL,
-          process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-          {
-            realtime: {
-              params: {
-                eventsPerSecond: 10
-              }
-            },
-            global: {
-              // ネットワーク接続の最適化
-              fetch: (...args) => {
-                requestCount++;
-                const startFetch = performance.now();
-                
-                return fetch(...args).then(res => {
-                  const endFetch = performance.now();
-                  requestTimings.push(endFetch - startFetch);
-                  return res;
-                });
-              }
-            },
-            auth: {
-              autoRefreshToken: true,
-              persistSession: true,
-              detectSessionInUrl: false,
-            },
-            // プリフェッチデータをキャッシュ
-            db: {
-              schema: 'public',
+      if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+        throw new Error('Supabase環境変数が設定されていません');
+      }
+      
+      // 新しいブラウザクライアントを作成
+      clientInstance = createBrowserClient(
+        process.env.NEXT_PUBLIC_SUPABASE_URL,
+        process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        {
+          cookies: {
+            get(name) {
+              const cookies = document.cookie.split(';').map(c => c.trim());
+              const cookie = cookies.find(c => c.startsWith(`${name}=`));
+              return cookie ? cookie.split('=')[1] : undefined;
+            }
+          },
+          realtime: {
+            params: {
+              eventsPerSecond: 10
+            }
+          },
+          global: {
+            fetch: (...args) => {
+              requestCount++;
+              const startFetch = performance.now();
+              
+              return fetch(...args).then(res => {
+                const endFetch = performance.now();
+                requestTimings.push(endFetch - startFetch);
+                return res;
+              });
             }
           }
-        );
-      } else {
-        // 従来の方法
-        clientInstance = createClientComponentClient();
-      }
+        }
+      );
       
       // クライアント初期化のパフォーマンスログ
       const endTime = performance.now();
@@ -96,18 +88,36 @@ export const createBrowserClient = async (): Promise<SupabaseClient> => {
     } catch (error) {
       console.error('Supabaseクライアント作成エラー:', error);
       
-      // フォールバック - エラーが発生してもインスタンス生成
-      if (!clientInstance) {
-        clientInstance = createClientComponentClient();
+      // エラーが発生した場合は最もシンプルな方法でクライアントを生成
+      try {
+        if (!clientInstance && process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+          clientInstance = createBrowserClient(
+            process.env.NEXT_PUBLIC_SUPABASE_URL,
+            process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+          );
+        }
+      } catch (fallbackError) {
+        console.error('フォールバッククライアント作成にも失敗:', fallbackError);
+        // クライアントが作成できない場合はnullを返す
+        clientInstance = null;
+        isInitializing = false;
+        throw new Error('Supabaseクライアントを初期化できませんでした');
       }
       
       isInitializing = false;
-      resolve(clientInstance);
+      if (clientInstance) {
+        resolve(clientInstance);
+      } else {
+        throw new Error('Supabaseクライアントを初期化できませんでした');
+      }
     }
   });
   
   return initPromise;
 };
+
+// 以前のエクスポート名との互換性のため
+export const createBrowserSupabaseClient = getClient;
 
 // 拡張されたSupabaseクエリ関数 - キャッシュ機能付き
 export const fetchWithCache = async <T>(

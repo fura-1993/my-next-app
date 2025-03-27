@@ -1,40 +1,52 @@
-import { createServerComponentClient } from '@supabase/auth-helpers-nextjs';
+import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
-import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { SupabaseClient } from '@supabase/supabase-js';
 
 // SSRのServer ComponentやAPI Routeで呼び出す
 // サーバーサイドではリクエストごとに新しいインスタンスが必要なため
 // 完全なシングルトンは実装せず、効率的な方法でインスタンス化する
-export const createClient = () => {
+export const createClient = (): SupabaseClient => {
   try {
-    // 環境変数が存在する場合は直接createClientを使用
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+      throw new Error('Supabase環境変数が設定されていません');
+    }
+    
+    // 新しいサーバークライアントを作成
+    return createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      {
+        cookies: {
+          get: (name: string) => {
+            return cookies().get(name)?.value;
+          },
+          set: (name: string, value: string, options: { path: string; maxAge: number; domain?: string; sameSite?: string; secure?: boolean }) => {
+            // サーバーサイドでは設定できないため警告を表示
+            console.warn('サーバーサイドでのクッキー設定は無視されます:', name);
+          },
+          remove: (name: string, options: { path: string; domain?: string; sameSite?: string; secure?: boolean }) => {
+            // サーバーサイドでは削除できないため警告を表示
+            console.warn('サーバーサイドでのクッキー削除は無視されます:', name);
+          }
+        }
+      }
+    );
+  } catch (error) {
+    console.error('Supabaseサーバークライアント作成エラー:', error);
+    
+    // エラーが発生した場合は最もシンプルな方法でクライアントを作成
     if (process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-      return createSupabaseClient(
+      return createServerClient(
         process.env.NEXT_PUBLIC_SUPABASE_URL,
         process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
         {
-          realtime: {
-            params: {
-              eventsPerSecond: 10
-            }
-          },
-          auth: {
-            autoRefreshToken: false,
-            persistSession: false
+          cookies: {
+            get: (name: string) => cookies().get(name)?.value
           }
         }
       );
     }
     
-    // 従来の方法でCookiesを使用
-    return createServerComponentClient({
-      cookies,
-    });
-  } catch (error) {
-    console.error('Supabaseサーバークライアント作成エラー:', error);
-    // フォールバック
-    return createServerComponentClient({
-      cookies,
-    });
+    throw new Error('Supabaseサーバークライアントを初期化できませんでした');
   }
 }; 
