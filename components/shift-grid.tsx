@@ -254,6 +254,9 @@ export function ShiftGrid() {
   // WebWorkerの代わりにTaskQueueを使用
   const taskQueueRef = useRef(new TaskQueue());
   
+  // 初回マウント済みフラグ
+  const isMountedRef = useRef(false);
+  
   // 処理ブロックのフラグ
   const isProcessingRef = useRef(false);
   // 保存待ちの変更を管理するRef
@@ -321,9 +324,9 @@ export function ShiftGrid() {
     }
   }, [shifts, hasPendingChanges]);
 
-  // データ読み込み - 自動更新するよう変更
+  // データ読み込み関数 - 改善版
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
-    // データ操作中は何もしない（UIブロック回避）
+    // 既に読み込み中なら何もしない
     if (isSaving || isLoading) return;
     
     const monthKey = format(date, 'yyyy-MM');
@@ -350,58 +353,59 @@ export function ShiftGrid() {
       const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
       const storedData = getFromStorage<ShiftEntry[]>(storageKey, []);
 
+      // 高速化したデータ変換（プリアロケーション）
+      const shiftMap: { [key: string]: string } = {};
+      
+      // データを変換
+      for (let i = 0; i < storedData.length; i++) {
+        const entry = storedData[i];
+        const key = `${entry.employee_id}-${entry.date}`;
+        shiftMap[key] = entry.shift_code;
+      }
+      
+      // キャッシュに保存
+      shiftsCache.current[monthKey] = {
+        data: { ...shiftMap },
+        timestamp: Date.now()
+      };
+      
+      // UIを更新
+      setShifts(shiftMap);
+      
       // ブロッキング時間を最低限確保（UXのため）
       const elapsedTime = Date.now() - startTime;
       if (elapsedTime < MIN_DB_OPERATION_TIME) {
         await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
       }
-
-      // 高速化したデータ変換（プリアロケーション）
-      const shiftMap: { [key: string]: string } = {};
-      
-      // データが多い場合は即座に空のマップをセット
-      if (storedData.length > 200) {
-        setShifts({});
-      }
-      
-      // バックグラウンドでの非同期データ変換
-      taskQueueRef.current.add(async () => {
-        for (let i = 0; i < storedData.length; i++) {
-          const entry = storedData[i];
-          const key = `${entry.employee_id}-${entry.date}`;
-          shiftMap[key] = entry.shift_code;
-        }
-        
-        // キャッシュに保存
-        shiftsCache.current[monthKey] = {
-          data: { ...shiftMap },
-          timestamp: Date.now()
-        };
-        
-        // レンダリング最適化：必要な場合のみ更新
-        setShifts(prev => {
-          const isEqual = Object.keys(prev).length === Object.keys(shiftMap).length && 
-            Object.keys(prev).every(key => prev[key] === shiftMap[key]);
-          
-          return isEqual ? prev : shiftMap;
-        });
-      });
       
       initialLoadDoneRef.current[monthKey] = true;
     } catch (err) {
       console.error('Error loading shifts:', err);
       toast.error('データの読み込みに失敗しました');
     } finally {
+      // データ読み込み状態を必ずリセット
       setIsLoading(false);
       isLoadingMonthRef.current[monthKey] = false;
     }
   }, [isSaving, isLoading]);
 
-  // 初回レンダリング時およびマウント時に自動的にデータを読み込む
+  // 初回マウント時のみデータを読み込む
   useEffect(() => {
-    // 現在の月のデータを自動的に読み込む
-    fetchData(currentDate, true);
-  }, [currentDate, fetchData]);
+    if (!isMountedRef.current) {
+      // 初回マウント時のみ読み込む
+      fetchData(currentDate, true);
+      isMountedRef.current = true;
+    }
+  }, [fetchData, currentDate]);
+
+  // 月が変更された時のみデータを読み込む
+  useEffect(() => {
+    // 初回マウント時はスキップ
+    if (!isMountedRef.current) return;
+    
+    // 月が変わった時は新しいデータを読み込む
+    fetchData(currentDate, false);
+  }, [currentMonthKey, fetchData]);
 
   // 日付配列のメモ化（月が変わるたびに再計算）
   const days = useMemo(() => 
@@ -411,8 +415,15 @@ export function ShiftGrid() {
     }), 
   [currentDate]);
 
-  // 月切り替え処理（手動操作のみ、自動データ取得なし）
+  // 月切り替え処理
   const handlePrevMonth = useCallback(() => {
+    // 保存待ちデータがある場合は確認
+    if (pendingChangesRef.current.size > 0) {
+      if (!confirm('未保存の変更があります。保存せずに月を変更しますか？')) {
+        return;
+      }
+    }
+    
     // UI操作は常に許可
     setCurrentDate(prev => {
       const newDate = subMonths(prev, 1);
@@ -421,6 +432,13 @@ export function ShiftGrid() {
   }, []);
 
   const handleNextMonth = useCallback(() => {
+    // 保存待ちデータがある場合は確認
+    if (pendingChangesRef.current.size > 0) {
+      if (!confirm('未保存の変更があります。保存せずに月を変更しますか？')) {
+        return;
+      }
+    }
+    
     // UI操作は常に許可
     setCurrentDate(prev => {
       const newDate = addMonths(prev, 1);
@@ -488,21 +506,18 @@ export function ShiftGrid() {
         await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
       }
       
-      // 非同期でキャッシュを更新（UIブロックを防止）
-      taskQueueRef.current.add(async () => {
-        // キャッシュを更新（メモリ内のみ）
-        const updatedShifts = { ...shiftsRef.current };
-        changes.forEach(change => {
-          const key = `${change.employeeId}-${change.date}`;
-          updatedShifts[key] = change.shift;
-        });
-        
-        // キャッシュを更新
-        shiftsCache.current[currentMonthKey] = {
-          data: updatedShifts,
-          timestamp: Date.now()
-        };
+      // キャッシュを更新
+      const updatedShifts = { ...shiftsRef.current };
+      changes.forEach(change => {
+        const key = `${change.employeeId}-${change.date}`;
+        updatedShifts[key] = change.shift;
       });
+      
+      // キャッシュを更新
+      shiftsCache.current[currentMonthKey] = {
+        data: updatedShifts,
+        timestamp: Date.now()
+      };
       
       // 保存成功後、待機変更をクリア
       pendingChangesRef.current.clear();
