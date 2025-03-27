@@ -123,7 +123,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
         a5: orientation === 'portrait' ? [148, 210] : [210, 148],
       };
       
-      // PDFドキュメント生成
+      // PDFドキュメント生成 - jsPDF v2.5.1のコンストラクタ形式に合わせる
       const doc = new jsPDF({
         orientation: orientation,
         unit: unit,
@@ -217,7 +217,7 @@ export function PdfExport({ currentDate, employees, getShiftValue, title = 'シ�
         ];
       });
       
-      // テーブル生成
+      // テーブル生成 - autoTableのシンタックスを確認
       autoTable(doc, {
         head: headers,
         body: body,
