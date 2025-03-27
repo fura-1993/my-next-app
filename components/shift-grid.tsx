@@ -312,8 +312,8 @@ export function ShiftGrid() {
 
   // データ読み込み - 完全に手動操作のみ（初回読み込みは除く）
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
-    // 処理中・データベース操作中は何もしない
-    if (isProcessingRef.current) return;
+    // データベース操作中は何もしない（UIブロック回避）
+    if (isSaving || isLoading) return;
     
     const monthKey = format(date, 'yyyy-MM');
     
@@ -337,7 +337,7 @@ export function ShiftGrid() {
     }
     
     try {
-      setProcessLock(true);
+      // データベース操作中フラグON
       setIsLoading(true);
       isLoadingMonthRef.current[monthKey] = true;
       
@@ -406,10 +406,9 @@ export function ShiftGrid() {
       toast.error('データの読み込みに失敗しました');
     } finally {
       setIsLoading(false);
-      setProcessLock(false);
       isLoadingMonthRef.current[monthKey] = false;
     }
-  }, [supabase, setProcessLock]);
+  }, [supabase, isSaving, isLoading]);
 
   // 初回レンダリング時のみデータを読み込む
   useEffect(() => {
@@ -430,9 +429,7 @@ export function ShiftGrid() {
 
   // 月切り替え処理（手動操作のみ、自動データ取得なし）
   const handlePrevMonth = useCallback(() => {
-    // 処理中は何もしない
-    if (isProcessingRef.current) return;
-    
+    // UI操作は常に許可
     setCurrentDate(prev => {
       const newDate = subMonths(prev, 1);
       return newDate;
@@ -440,9 +437,7 @@ export function ShiftGrid() {
   }, []);
 
   const handleNextMonth = useCallback(() => {
-    // 処理中は何もしない
-    if (isProcessingRef.current) return;
-    
+    // UI操作は常に許可
     setCurrentDate(prev => {
       const newDate = addMonths(prev, 1);
       return newDate;
@@ -451,8 +446,8 @@ export function ShiftGrid() {
 
   // データの手動更新（ボタンクリック時のみ実行）
   const handleRefreshData = useCallback(() => {
-    // 処理中・保存中・読み込み中は何もしない
-    if (isProcessingRef.current || isLoading || isSaving) return;
+    // データベース操作中は何もしない
+    if (isLoading || isSaving) return;
     
     // 未保存の変更がある場合は確認
     if (pendingChangesRef.current.size > 0) {
@@ -468,11 +463,10 @@ export function ShiftGrid() {
 
   // 保存処理（すべての変更を保存 - ボタンクリック時のみ実行）
   const saveAllChanges = useCallback(async () => {
-    // 保存するデータがない場合や処理中は何もしない
-    if (pendingChangesRef.current.size === 0 || isProcessingRef.current) return;
+    // 保存するデータがない場合やデータベース操作中は何もしない
+    if (pendingChangesRef.current.size === 0 || isLoading || isSaving) return;
     
     try {
-      setProcessLock(true);
       setIsSaving(true);
       
       const startTime = Date.now();
@@ -591,15 +585,12 @@ export function ShiftGrid() {
       toast.error('シフトの保存に失敗しました');
     } finally {
       setIsSaving(false);
-      setProcessLock(false);
     }
-  }, [supabase, currentMonthKey, setProcessLock]);
+  }, [supabase, currentMonthKey, isLoading, isSaving]);
 
   // シフト変更時のハンドラ - ローカル状態のみ変更・データベース通信なし
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
-    // データベース保存中・読み込み中のみ何もしない（UIの入力はブロックしない）
-    if (isSaving || isLoading) return;
-    
+    // UIの入力は常に許可（データベース通信なし）
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
@@ -618,7 +609,7 @@ export function ShiftGrid() {
       date: dateStr,
       shift: newShift
     });
-  }, [isSaving, isLoading]);
+  }, []);
 
   // メモ化されたシフト値取得関数
   const getShiftValue = useCallback((employeeId: number, date: Date) => {
@@ -629,10 +620,9 @@ export function ShiftGrid() {
 
   // 全削除処理（ボタンクリック時のみ実行）
   const handleDeleteAllShifts = useCallback(async () => {
-    if (isProcessingRef.current) return;
+    if (isLoading || isSaving) return;
     
     try {
-      setProcessLock(true);
       setIsLoading(true);
       
       const startTime = Date.now();
@@ -669,9 +659,8 @@ export function ShiftGrid() {
       toast.error('シフトの削除に失敗しました');
     } finally {
       setIsLoading(false);
-      setProcessLock(false);
     }
-  }, [currentDate, supabase, currentMonthKey, setProcessLock]);
+  }, [currentDate, supabase, currentMonthKey, isLoading, isSaving]);
 
   // 従業員関連の処理
   const handleEmployeeUpdate = useCallback((updatedEmployee: Employee) => {

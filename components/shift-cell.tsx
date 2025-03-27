@@ -17,7 +17,12 @@ interface ShiftCellProps {
 }
 
 // 風船エフェクト用コンポーネント
-const CellBalloon = ({ isPopped, onFinish }: { isPopped: boolean; onFinish: () => void }) => {
+const CellBalloon = ({ isPopped, onFinish, onClick, isBlank }: { 
+  isPopped: boolean; 
+  onFinish: () => void;
+  onClick: () => void;
+  isBlank: boolean;
+}) => {
   const balloonRef = useRef<HTMLDivElement>(null);
   
   useEffect(() => {
@@ -33,12 +38,16 @@ const CellBalloon = ({ isPopped, onFinish }: { isPopped: boolean; onFinish: () =
     return () => clearTimeout(timer);
   }, [isPopped, onFinish]);
   
-  if (!isPopped) return null;
+  if (!isBlank || isPopped) return null;
   
   return (
     <div 
       ref={balloonRef}
-      className="balloon-container popped absolute inset-0 z-10"
+      className={cn(
+        "balloon-container absolute inset-0 z-10 cursor-pointer",
+        isPopped && "popped"
+      )}
+      onClick={onClick}
     >
       <div className="balloon">
         <div className="balloon-body-white" />
@@ -47,7 +56,43 @@ const CellBalloon = ({ isPopped, onFinish }: { isPopped: boolean; onFinish: () =
         <div className="balloon-tie-white" />
       </div>
       
-      {/* Burst particles */}
+      {isPopped && (
+        <>
+          <div className="burst-ring" />
+          {Array.from({ length: 6 }).map((_, i) => (
+            <div 
+              key={i}
+              className="burst-particle"
+              style={{
+                '--angle': `${i * 60}deg`,
+                '--delay': `${i * 0.02}s`
+              } as React.CSSProperties}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+};
+
+// 破裂エフェクト用コンポーネント（値入力時のフィードバック）
+const BurstEffect = ({ isActive, onFinish }: { isActive: boolean; onFinish: () => void }) => {
+  const effectRef = useRef<HTMLDivElement>(null);
+  
+  useEffect(() => {
+    if (!isActive) return;
+    
+    const timer = setTimeout(() => {
+      onFinish();
+    }, 400);
+    
+    return () => clearTimeout(timer);
+  }, [isActive, onFinish]);
+  
+  if (!isActive) return null;
+  
+  return (
+    <div className="absolute inset-0 z-10 pointer-events-none">
       <div className="burst-ring" />
       {Array.from({ length: 6 }).map((_, i) => (
         <div 
@@ -90,10 +135,13 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
 }: ShiftCellProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [lastClickTime, setLastClickTime] = useState(0);
-  const [showEffect, setShowEffect] = useState(false);
-  const [selectedShift, setSelectedShift] = useState<string | null>(null);
+  const [showBurstEffect, setShowBurstEffect] = useState(false);
+  const [isPopped, setIsPopped] = useState(false);
   
   const { shiftTypes } = useShiftTypes();
+  
+  // 値が未設定（風船表示）か判定
+  const isBlankValue = value === '−' || value === '-';
   
   // 日本語の曜日名を取得
   const dayName = format(date, 'E', { locale: ja });
@@ -110,13 +158,13 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
       {
         "bg-red-50": dayNumber === 0,
         "bg-blue-50": dayNumber === 6,
-        [colorClass]: colorClass,
+        [colorClass]: !isBlankValue && colorClass,
       },
       "text-center align-middle px-1 py-1 font-medium text-base",
       rowIndex === rowsLength - 1 ? "border-b-2" : "",
       "hover:bg-opacity-80"
     );
-  }, [value, dayNumber, rowIndex, rowsLength, shiftTypes]);
+  }, [value, dayNumber, rowIndex, rowsLength, shiftTypes, isBlankValue]);
   
   // シフト変更ハンドラー - クリックスロットリング (300ms) 付き
   const handleClick = useCallback(() => {
@@ -126,23 +174,40 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
     if (now - lastClickTime < 300) return;
     
     setLastClickTime(now);
-    setIsOpen(true);
-  }, [lastClickTime]);
+    
+    // 空セルの場合は風船をポップ
+    if (isBlankValue) {
+      setIsPopped(true);
+      setTimeout(() => {
+        setIsOpen(true);
+      }, 300);
+    } else {
+      setIsOpen(true);
+    }
+  }, [lastClickTime, isBlankValue]);
   
   const handleSelect = useCallback((shift: string) => {
     setIsOpen(false);
-    setSelectedShift(shift);
-    setShowEffect(true);
     
-    // 即座に値を更新（ビジュアルフィードバック用）
-    setTimeout(() => {
-      onShiftChange(employeeId, date, shift);
-    }, 50);
-  }, [employeeId, date, onShiftChange]);
+    // 値が変わる場合のみエフェクト表示
+    if (value !== shift) {
+      setShowBurstEffect(true);
+    }
+    
+    // 即座に値を更新
+    onShiftChange(employeeId, date, shift);
+  }, [employeeId, date, onShiftChange, value]);
   
   const handleEffectFinished = useCallback(() => {
-    setShowEffect(false);
-    setSelectedShift(null);
+    setShowBurstEffect(false);
+    setIsPopped(false);
+  }, []);
+  
+  const handleBalloonClick = useCallback(() => {
+    setIsPopped(true);
+    setTimeout(() => {
+      setIsOpen(true);
+    }, 300);
   }, []);
   
   return (
@@ -151,7 +216,10 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
         <PopoverTrigger asChild>
           <button
             onClick={handleClick}
-            className="w-full h-full flex items-center justify-center focus:outline-none"
+            className={cn(
+              "w-full h-full flex items-center justify-center focus:outline-none",
+              isBlankValue && "opacity-0"
+            )}
           >
             {value}
           </button>
@@ -176,9 +244,17 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
         </PopoverContent>
       </Popover>
       
-      {/* 風船ポップエフェクト */}
+      {/* 風船表示（空セルの場合） */}
       <CellBalloon 
-        isPopped={showEffect} 
+        isPopped={isPopped}
+        onFinish={handleEffectFinished}
+        onClick={handleBalloonClick}
+        isBlank={isBlankValue}
+      />
+      
+      {/* 値入力時のバーストエフェクト */}
+      <BurstEffect 
+        isActive={showBurstEffect} 
         onFinish={handleEffectFinished} 
       />
     </td>
