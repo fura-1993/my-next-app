@@ -44,6 +44,12 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
     const loadShiftTypes = async () => {
       setIsLoading(true);
       try {
+        if (!supabase) {
+          console.warn('Supabaseクライアントが利用できないため、デフォルト値を使用します');
+          setShiftTypes(defaultShiftTypes);
+          return;
+        }
+
         const { data, error } = await supabase
           .from('shift_types')
           .select('*')
@@ -56,12 +62,12 @@ export function ShiftTypesProvider({ children }: { children: ReactNode }) {
         if (data && data.length > 0) {
           setShiftTypes(data);
         } else {
-          // データがない場合はデフォルト値を使用
+          console.log('シフトタイプデータが存在しないため、デフォルト値を使用します');
           setShiftTypes(defaultShiftTypes);
         }
       } catch (err) {
         console.error('Error loading shift types:', err);
-        toast.error('シフトタイプの読み込みに失敗しました');
+        toast.error('シフトタイプの読み込みに失敗しました。デフォルト値を使用します。');
         // エラー時はデフォルト値を使用
         setShiftTypes(defaultShiftTypes);
       } finally {

@@ -57,22 +57,38 @@ export function ShiftGrid() {
   useEffect(() => {
     const fetchEmployees = async () => {
       try {
+        if (!supabase) {
+          console.warn('Supabaseクライアントが利用できないため、デフォルト従業員データを使用します');
+          setEmployees(initialEmployees);
+          return;
+        }
+
         const { data, error } = await supabase
           .from('employees')
           .select('*')
           .order('id');
 
-        if (error) throw error;
+        if (error) {
+          throw error;
+        }
 
         if (data && data.length > 0) {
           setEmployees(data);
         } else {
-          // データがない場合はデフォルト値を使用
+          console.log('従業員データが存在しないため、デフォルト値を使用します');
           setEmployees(initialEmployees);
+          
+          // データがない場合は初期値を保存しておく
+          try {
+            await supabase.from('employees').insert(initialEmployees);
+            console.log('初期従業員データを保存しました');
+          } catch (insertErr) {
+            console.error('初期従業員データの保存に失敗しました:', insertErr);
+          }
         }
       } catch (err) {
         console.error('Failed to fetch employees:', err);
-        toast.error('従業員データの読み込みに失敗しました');
+        toast.error('従業員データの読み込みに失敗しました。デフォルト値を使用します。');
         // エラー時はデフォルト値を使用
         setEmployees(initialEmployees);
       }

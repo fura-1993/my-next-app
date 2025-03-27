@@ -3,6 +3,8 @@ import { cookies } from 'next/headers';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
 
 // SSRのServer ComponentやAPI Routeで呼び出す
+// サーバーサイドではリクエストごとに新しいインスタンスが必要なため
+// 完全なシングルトンは実装せず、効率的な方法でインスタンス化する
 export const createClient = () => {
   try {
     // 環境変数が存在する場合は直接createClientを使用
@@ -15,6 +17,10 @@ export const createClient = () => {
             params: {
               eventsPerSecond: 10
             }
+          },
+          auth: {
+            autoRefreshToken: false,
+            persistSession: false
           }
         }
       );
