@@ -597,8 +597,8 @@ export function ShiftGrid() {
 
   // シフト変更時のハンドラ - ローカル状態のみ変更・データベース通信なし
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
-    // 処理中は何もしない
-    if (isProcessingRef.current) return;
+    // データベース保存中・読み込み中のみ何もしない（UIの入力はブロックしない）
+    if (isSaving || isLoading) return;
     
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
@@ -618,7 +618,7 @@ export function ShiftGrid() {
       date: dateStr,
       shift: newShift
     });
-  }, []);
+  }, [isSaving, isLoading]);
 
   // メモ化されたシフト値取得関数
   const getShiftValue = useCallback((employeeId: number, date: Date) => {

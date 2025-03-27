@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import { useShiftTypes } from '@/contexts/shift-types-context';
@@ -15,6 +15,53 @@ interface ShiftCellProps {
   rowIndex: number;
   rowsLength: number;
 }
+
+// 風船エフェクト用コンポーネント
+const CellBalloon = ({ isPopped, onFinish }: { isPopped: boolean; onFinish: () => void }) => {
+  const balloonRef = useRef<HTMLDivElement>(null);
+  
+  useEffect(() => {
+    if (!isPopped) return;
+    
+    const timer = setTimeout(() => {
+      if (balloonRef.current) {
+        balloonRef.current.style.display = 'none';
+      }
+      onFinish();
+    }, 400);
+    
+    return () => clearTimeout(timer);
+  }, [isPopped, onFinish]);
+  
+  if (!isPopped) return null;
+  
+  return (
+    <div 
+      ref={balloonRef}
+      className="balloon-container popped absolute inset-0 z-10"
+    >
+      <div className="balloon">
+        <div className="balloon-body-white" />
+        <div className="balloon-highlight" />
+        <div className="balloon-highlight-secondary" />
+        <div className="balloon-tie-white" />
+      </div>
+      
+      {/* Burst particles */}
+      <div className="burst-ring" />
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div 
+          key={i}
+          className="burst-particle"
+          style={{
+            '--angle': `${i * 60}deg`,
+            '--delay': `${i * 0.02}s`
+          } as React.CSSProperties}
+        />
+      ))}
+    </div>
+  );
+};
 
 // シフトタイプに応じたカラークラスを取得する関数
 const getColorClass = (shiftCode: string, shiftTypes: any[]) => {
@@ -43,6 +90,8 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
 }: ShiftCellProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [lastClickTime, setLastClickTime] = useState(0);
+  const [showEffect, setShowEffect] = useState(false);
+  const [selectedShift, setSelectedShift] = useState<string | null>(null);
   
   const { shiftTypes } = useShiftTypes();
   
@@ -82,15 +131,22 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
   
   const handleSelect = useCallback((shift: string) => {
     setIsOpen(false);
+    setSelectedShift(shift);
+    setShowEffect(true);
     
-    // 連続クリック防止 (50ms)
+    // 即座に値を更新（ビジュアルフィードバック用）
     setTimeout(() => {
       onShiftChange(employeeId, date, shift);
     }, 50);
   }, [employeeId, date, onShiftChange]);
   
+  const handleEffectFinished = useCallback(() => {
+    setShowEffect(false);
+    setSelectedShift(null);
+  }, []);
+  
   return (
-    <td className={cellStyle}>
+    <td className={cn(cellStyle, "overflow-hidden")}>
       <Popover open={isOpen} onOpenChange={setIsOpen}>
         <PopoverTrigger asChild>
           <button
@@ -119,6 +175,12 @@ export const ShiftCell = React.memo(function ShiftCellComponent({
           </div>
         </PopoverContent>
       </Popover>
+      
+      {/* 風船ポップエフェクト */}
+      <CellBalloon 
+        isPopped={showEffect} 
+        onFinish={handleEffectFinished} 
+      />
     </td>
   );
 });
