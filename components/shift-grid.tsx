@@ -446,7 +446,31 @@ export function ShiftGrid() {
     });
   }, []);
 
-  // 保存処理（すべての変更を保存 - ボタンクリック時のみ実行）
+  // 変更があるときの警告メッセージ
+  const pendingChangesWarning = useMemo(() => {
+    if (!hasPendingChanges || isSaving) return null;
+    return "未保存の変更があります。「保存」ボタンを押して変更を確定してください。";
+  }, [hasPendingChanges, isSaving]);
+
+  // ボタン無効化状態のメモ化
+  const isButtonDisabled = useMemo(() => 
+    isLoading || isSaving,
+  [isLoading, isSaving]);
+
+  // 保存ボタン無効化状態のメモ化
+  const isSaveButtonDisabled = useMemo(() => 
+    isButtonDisabled || !hasPendingChanges,
+  [isButtonDisabled, hasPendingChanges]);
+
+  // 保存待ち変更を検出して状態を更新（保存ボタンの有効化のため）
+  useEffect(() => {
+    const hasChanges = pendingChangesRef.current.size > 0;
+    if (hasPendingChanges !== hasChanges) {
+      setHasPendingChanges(hasChanges);
+    }
+  }, [shifts, hasPendingChanges]); 
+
+  // 保存処理関数を修正
   const saveAllChanges = useCallback(async () => {
     // 保存するデータがない場合やデータ操作中は何もしない
     if (pendingChangesRef.current.size === 0 || isLoading || isSaving) return;
@@ -521,6 +545,7 @@ export function ShiftGrid() {
       
       // 保存成功後、待機変更をクリア
       pendingChangesRef.current.clear();
+      // 変更状態を確実に更新（ボタンの有効化のため）
       setHasPendingChanges(false);
       
       toast.success('シフトを保存しました');
@@ -528,11 +553,12 @@ export function ShiftGrid() {
       console.error('Error saving shifts:', err);
       toast.error('シフトの保存に失敗しました');
     } finally {
+      // 保存状態を解除
       setIsSaving(false);
     }
-  }, [currentMonthKey, isLoading, isSaving]);
+  }, [currentMonthKey, isLoading, isSaving, setHasPendingChanges]);
 
-  // シフト変更時のハンドラ - ローカル状態のみ変更
+  // シフト変更時のハンドラを修正 - 変更をより確実に反映
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
     // UIの入力は常に許可
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -553,6 +579,9 @@ export function ShiftGrid() {
       date: dateStr,
       shift: newShift
     });
+    
+    // 変更状態を確実に更新（ボタンの有効化のため）
+    setHasPendingChanges(true);
   }, []);
 
   // メモ化されたシフト値取得関数
@@ -592,22 +621,6 @@ export function ShiftGrid() {
     
     return `保存 (${pendingCount}件)`;
   }, [isSaving]);
-
-  // 変更があるときの警告メッセージ
-  const pendingChangesWarning = useMemo(() => {
-    if (!hasPendingChanges || isSaving) return null;
-    return "未保存の変更があります。「保存」ボタンを押して変更を確定してください。";
-  }, [hasPendingChanges, isSaving]);
-
-  // ボタン無効化状態のメモ化
-  const isButtonDisabled = useMemo(() => 
-    isLoading || isSaving,
-  [isLoading, isSaving]);
-
-  // 保存ボタン無効化状態のメモ化
-  const isSaveButtonDisabled = useMemo(() => 
-    isButtonDisabled || pendingChangesRef.current.size === 0,
-  [isButtonDisabled]);
 
   // ヘッダーメモ化
   const headerComponent = useMemo(() => (
