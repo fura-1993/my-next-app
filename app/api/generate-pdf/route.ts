@@ -66,13 +66,16 @@ export async function GET(req: NextRequest) {
     }
 
     // ◆ PDF出力用バッファの設定
-    const buffers: Uint8Array[] = [];
-    doc.on('data', chunk => buffers.push(chunk));
+    const chunks: any[] = [];
+    doc.on('data', (chunk: any) => chunks.push(chunk));
 
     // ◆ PDF生成完了までの Promise 化
     const pdfBuffer = await new Promise<Buffer>((resolve, reject) => {
-      doc.on('end', () => resolve(Buffer.concat(buffers)));
-      doc.on('error', (err) => {
+      doc.on('end', () => {
+        const result = Buffer.concat(chunks);
+        resolve(result);
+      });
+      doc.on('error', (err: any) => {
         console.error('PDF生成中のエラー:', err);
         reject(err);
       });

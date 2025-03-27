@@ -44,7 +44,7 @@
     "@react-spring/web": "^9.7.3",
     "@react-three/drei": "^9.102.6",
     "@react-three/fiber": "^8.15.19",
-    "@supabase/ssr": "^0.1.0",
+    "@supabase/ssr": "^0.0.10",
     "@supabase/supabase-js": "^2.49.3",
     "@tanstack/react-virtual": "3.0.0",
     "@types/lodash": "^4.17.16",
@@ -96,7 +96,7 @@
   "devDependencies": {
     "@eslint/config-array": "^0.19.2",
     "@eslint/object-schema": "^2.1.6",
-    "@types/pdfkit": "^0.13.4",
+    "@types/pdfkit": "^0.13.9",
     "supabase": "^2.20.3"
   }
 }
