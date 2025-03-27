@@ -7,10 +7,9 @@ import holidays from '@holiday-jp/holiday_jp';
 import { ShiftHeader } from './shift-header';
 import { ShiftLegend } from './shift-legend';
 import { ShiftCell } from './shift-cell';
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { useShiftTypes } from '@/contexts/shift-types-context';
-import { Trash2, UserCog, Save, RotateCcw, Download } from 'lucide-react';
+import { UserCog, Save } from 'lucide-react';
 import { EmployeeCreator } from './employee-creator';
 import { EmployeeEditor } from './employee-editor';
 import { toast } from 'sonner';
@@ -322,7 +321,7 @@ export function ShiftGrid() {
     }
   }, [shifts, hasPendingChanges]);
 
-  // データ読み込み - 完全に手動操作のみ（初回読み込みは除く）
+  // データ読み込み - 自動更新するよう変更
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
     // データ操作中は何もしない（UIブロック回避）
     if (isSaving || isLoading) return;
@@ -336,15 +335,6 @@ export function ShiftGrid() {
     
     // 同じ月のデータをロード中なら何もしない（二重ロード防止）
     if (isLoadingMonthRef.current[monthKey]) {
-      return;
-    }
-    
-    // キャッシュがあり有効期限内なら使用（強制リロードでない場合）
-    const cachedData = shiftsCache.current[monthKey];
-    if (!forceReload && cachedData && (Date.now() - cachedData.timestamp) < CACHE_TTL) {
-      // 即時UI更新のための最小限のデータのみセット
-      setShifts(cachedData.data);
-      initialLoadDoneRef.current[monthKey] = true;
       return;
     }
     
@@ -407,13 +397,10 @@ export function ShiftGrid() {
     }
   }, [isSaving, isLoading]);
 
-  // 初回レンダリング時のみデータを読み込む
+  // 初回レンダリング時およびマウント時に自動的にデータを読み込む
   useEffect(() => {
-    const monthKey = format(currentDate, 'yyyy-MM');
-    if (!initialLoadDoneRef.current[monthKey]) {
-      // 初回ロードのみデータを取得
-      fetchData(currentDate);
-    }
+    // 現在の月のデータを自動的に読み込む
+    fetchData(currentDate, true);
   }, [currentDate, fetchData]);
 
   // 日付配列のメモ化（月が変わるたびに再計算）
@@ -440,23 +427,6 @@ export function ShiftGrid() {
       return newDate;
     });
   }, []);
-
-  // データの手動更新（ボタンクリック時のみ実行）
-  const handleRefreshData = useCallback(() => {
-    // データ操作中は何もしない
-    if (isLoading || isSaving) return;
-    
-    // 未保存の変更がある場合は確認
-    if (pendingChangesRef.current.size > 0) {
-      if (!confirm('未保存の変更があります。データを更新すると変更が失われますが、続行しますか？')) {
-        return;
-      }
-    }
-    
-    // 強制的にリロード
-    fetchData(currentDate, true);
-    toast.info('データを最新の状態に更新しています...');
-  }, [currentDate, fetchData, isLoading, isSaving]);
 
   // 保存処理（すべての変更を保存 - ボタンクリック時のみ実行）
   const saveAllChanges = useCallback(async () => {
@@ -576,47 +546,6 @@ export function ShiftGrid() {
     const shift = shiftsRef.current[key];
     return shift ? getUpdatedShiftCode(shift) : '−';
   }, [getUpdatedShiftCode]);
-
-  // 全削除処理（ボタンクリック時のみ実行）
-  const handleDeleteAllShifts = useCallback(async () => {
-    if (isLoading || isSaving) return;
-    
-    try {
-      setIsLoading(true);
-      
-      const startTime = Date.now();
-      
-      // 現在の月のデータを削除
-      const monthKey = format(currentDate, 'yyyy-MM');
-      const storageKey = `${SHIFTS_STORAGE_KEY}_${monthKey}`;
-      
-      // ローカルストレージから削除
-      saveToStorage(storageKey, []);
-      
-      // ブロッキング時間確保（UX改善）
-      const elapsedTime = Date.now() - startTime;
-      if (elapsedTime < MIN_DB_OPERATION_TIME) {
-        await new Promise(resolve => setTimeout(resolve, MIN_DB_OPERATION_TIME - elapsedTime));
-      }
-      
-      // キャッシュから削除（非同期）
-      taskQueueRef.current.add(async () => {
-        delete shiftsCache.current[currentMonthKey];
-      });
-      
-      // ローカルデータをクリア
-      setShifts({});
-      pendingChangesRef.current.clear();
-      setHasPendingChanges(false);
-      
-      toast.success('すべてのシフトを削除しました');
-    } catch (err) {
-      console.error('Error deleting shifts:', err);
-      toast.error('シフトの削除に失敗しました');
-    } finally {
-      setIsLoading(false);
-    }
-  }, [currentDate, currentMonthKey, isLoading, isSaving]);
 
   // 従業員関連の処理
   const handleEmployeeUpdate = useCallback((updatedEmployee: Employee) => {
@@ -763,58 +692,7 @@ export function ShiftGrid() {
             <Save className="w-4 h-4 mr-1.5" />
             {saveButtonText}
           </button>
-          
-          <button
-            onClick={handleRefreshData}
-            disabled={isButtonDisabled}
-            className={cn(
-              "inline-flex items-center justify-center rounded-full text-sm font-medium",
-              "transition-all duration-200 ease-in-out",
-              "bg-blue-500 text-white shadow-lg hover:bg-blue-600 h-10 px-4",
-              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              isButtonDisabled && "opacity-50 cursor-not-allowed"
-            )}
-          >
-            <RotateCcw className="w-4 h-4 mr-1.5" />
-            データ更新
-          </button>
         </div>
-      </div>
-      
-      <div className="fixed bottom-6 right-6">
-        <AlertDialog>
-          <AlertDialogTrigger 
-            className={cn(
-              "floating-delete inline-flex items-center justify-center rounded-full text-xs font-medium",
-              "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              "bg-destructive text-destructive-foreground shadow-lg hover:bg-destructive/90 h-10 px-4",
-              isButtonDisabled && "opacity-50 cursor-not-allowed"
-            )}
-            disabled={isButtonDisabled}
-          >
-            <Trash2 className="w-4 h-4 mr-1.5" />
-            全削除
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>スケジュール削除の確認</AlertDialogTitle>
-              <AlertDialogDescription className="space-y-2">
-                <p>{format(currentDate, 'yyyy年M月', { locale: ja })}のすべてのスケジュールを削除し、風船に戻します。</p>
-                <p className="text-destructive">この操作は取り消せません。</p>
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>キャンセル</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={handleDeleteAllShifts}
-                className="bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
-                disabled={isButtonDisabled}
-              >
-                削除する
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
       </div>
       
       {selectedEmployee && (
