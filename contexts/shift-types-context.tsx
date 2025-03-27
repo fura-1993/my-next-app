@@ -20,11 +20,11 @@ interface ShiftTypesContextType {
 const ShiftTypesContext = createContext<ShiftTypesContextType | undefined>(undefined);
 
 const defaultShiftTypes: ShiftType[] = [
-  { code: '成', label: '成田969', color: '#3B82F6', hours: '8:00-17:00' },
-  { code: '富', label: '富里802', color: '#16A34A', hours: '8:30-17:30' },
-  { code: 'パ', label: '楽々パーキング', color: '#CA8A04', hours: '9:00-18:00' },
-  { code: '植', label: '成田969植栽管理', color: '#DC2626', hours: '7:00-16:00' },
-  { code: '稲', label: '稲毛長沼', color: '#7C3AED', hours: '8:00-17:00' },
+  { code: '成', label: '成田969', color: '#3B82F6', hours: '12:00-17:00' },
+  { code: '富', label: '富里802', color: '#16A34A', hours: '9:00-17:30' },
+  { code: '楽', label: '楽々パーキング', color: '#CA8A04', hours: '8:00-12:00' },
+  { code: '植', label: '成田969植栽管理', color: '#DC2626', hours: '13:00-18:00' },
+  { code: '長', label: '稲毛長沼', color: '#7C3AED', hours: '9:00-17:00' },
   { code: '他', label: 'その他', color: '#BE185D', hours: '9:00-18:00' },
 ];
 

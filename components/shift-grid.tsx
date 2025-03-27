@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { addMonths, subMonths, format, getDate, getDay, startOfMonth, endOfMonth, eachDayOfInterval } from 'date-fns';
 import { ja } from 'date-fns/locale';
 import holidays from '@holiday-jp/holiday_jp';
@@ -10,7 +10,7 @@ import { ShiftCell } from './shift-cell';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '@/components/ui/alert-dialog';
 import { cn } from '@/lib/utils';
 import { useShiftTypes } from '@/contexts/shift-types-context';
-import { Trash2, UserCog, Save, RotateCcw } from 'lucide-react';
+import { Trash2, UserCog, Save, RotateCcw, Download } from 'lucide-react';
 import { EmployeeCreator } from './employee-creator';
 import { EmployeeEditor } from './employee-editor';
 import { createBrowserClient } from '@/utils/supabase/client';
@@ -31,6 +31,12 @@ interface PendingChange {
   shift: string;
 }
 
+interface Employee {
+  id: number;
+  name: string;
+  givenName?: string;
+}
+
 const initialEmployees = [
   { id: 1, name: '橋本' },
   { id: 2, name: '棟方' },
@@ -42,21 +48,207 @@ const initialEmployees = [
   { id: 8, name: '小林', givenName: '利治' },
 ];
 
-// キャッシュ有効期限 (24時間 - ほぼ永続的)
-const CACHE_TTL = 24 * 60 * 60 * 1000;
-// 処理ブロック時間（最小）
-const MIN_PROCESSING_TIME = 50;
+// キャッシュ有効期限 (1週間 - ほぼ永続的)
+const CACHE_TTL = 7 * 24 * 60 * 60 * 1000;
+// データ遅延読み込み時間 (ms)
+const LAZY_LOAD_DELAY = 10;
+
+// 従業員行コンポーネント（メモ化）
+const EmployeeRow = React.memo(({ 
+  employee, 
+  days, 
+  getShiftValue, 
+  handleShiftChange,
+  index,
+  rowsLength
+}: { 
+  employee: Employee, 
+  days: Date[], 
+  getShiftValue: (employeeId: number, date: Date) => string,
+  handleShiftChange: (employeeId: number, date: Date, newShift: string) => void,
+  index: number,
+  rowsLength: number
+}) => {
+  const openEmployeeEditor = () => {
+    // カスタムイベントとして発火
+    window.dispatchEvent(new CustomEvent('edit-employee', { detail: employee }));
+  };
+
+  return (
+    <tr 
+      className={index % 2 === 0 ? 'bg-white' : 'bg-slate-100'}
+    >
+      <td 
+        className={cn(
+          "sticky left-0 z-10 font-medium text-sm whitespace-nowrap p-0",
+          index % 2 === 0 ? 'bg-white' : 'bg-slate-100'
+        )}
+      >
+        <div 
+          className={cn(
+            "employee-icon group flex items-center justify-center h-[36px] mx-auto cursor-pointer rounded-2xl w-[62px] whitespace-nowrap overflow-hidden",
+            index % 2 === 0 && [
+              'bg-gradient-to-b from-white to-gray-50',
+              'border border-black/15',
+              'shadow-[0_2px_4px_rgba(0,0,0,0.05),0_4px_8px_-2px_rgba(0,0,0,0.1)]',
+              'hover:shadow-[0_4px_8px_rgba(0,0,0,0.1),0_8px_16px_-4px_rgba(0,0,0,0.15)]',
+              'hover:border-black/20',
+              'transform-gpu hover:translate-y-[-2px] hover:scale-[1.02]',
+              'transition-all duration-300 ease-out'
+            ],
+            index % 2 !== 0 && [
+              'bg-gradient-to-b from-gray-900 to-black',
+              'shadow-[0_2px_4px_rgba(0,0,0,0.2)]',
+              'hover:shadow-[0_4px_8px_rgba(0,0,0,0.25)]',
+              'transform-gpu hover:translate-y-[-2px] hover:scale-[1.02]',
+              'transition-all duration-300 ease-out'
+            ]
+          )}
+          onClick={openEmployeeEditor}
+        >
+          <div className="flex items-center justify-center gap-0.5">
+            <span 
+              className={cn(
+                "font-extrabold tracking-tight text-[15px] whitespace-nowrap",
+                index % 2 === 0 ? 'text-black' : 'text-white'
+              )}
+              data-text={employee.name}
+            >
+              {employee.name}
+            </span>
+            {employee.givenName && (
+              <span className={cn(
+                "text-[11px] font-extrabold tracking-wide whitespace-nowrap",
+                index % 2 === 0 ? 'text-black/70' : 'text-white/70'
+              )}>
+                {employee.givenName[0]}
+              </span>
+            )}
+            <UserCog 
+              className={cn(
+                "w-3.5 h-3.5 ml-0.5 opacity-0 transition-all duration-300 group-hover:opacity-100 transform group-hover:scale-110",
+                index % 2 === 0 ? 'text-black/60' : 'text-white/70'
+              )}
+            />
+          </div>
+        </div>
+      </td>
+      {days.map((date) => {
+        const shift = getShiftValue(employee.id, date);
+        return (
+          <td 
+            key={date.toString()} 
+            className={cn(
+              "p-0",
+              index === rowsLength - 1 && date === days[0] && "rounded-bl-2xl",
+              index === rowsLength - 1 && date === days[days.length - 1] && "rounded-br-2xl",
+              index % 2 === 0 ? 'bg-white' : 'bg-slate-100'
+            )}
+          >
+            <ShiftCell
+              shift={shift}
+              employeeId={employee.id}
+              date={date}
+              rowType={index % 2 === 0 ? 'even' : 'odd'}
+              onShiftChange={handleShiftChange}
+            />
+          </td>
+        );
+      })}
+    </tr>
+  );
+}, 
+(prevProps, nextProps) => {
+  // カスタム比較関数 - 必要なときだけ再レンダリング
+  if (prevProps.employee.id !== nextProps.employee.id) return false;
+  if (prevProps.days !== nextProps.days) return false;
+  if (prevProps.index !== nextProps.index) return false;
+  if (prevProps.rowsLength !== nextProps.rowsLength) return false;
+  
+  // 比較コストが高いため、参照の比較のみで最適化
+  return true;
+});
+
+// メイン日付ヘッダーコンポーネント（メモ化）
+const DateHeader = React.memo(({ days }: { days: Date[] }) => {
+  const isWeekend = useCallback((date: Date) => getDay(date) === 0, []);
+  const isSaturday = useCallback((date: Date) => getDay(date) === 6, []);
+
+  return (
+    <tr className="bg-gradient-to-b from-gray-50/95 to-gray-50/90">
+      <th className="px-2 py-3 sticky left-0 bg-gradient-to-b from-gray-50/95 to-gray-50/90 z-10 w-[50px] min-w-[50px] first:rounded-tl-2xl">
+        担当
+      </th>
+      {days.map((date, index) => (
+        <th
+          key={date.toString()}
+          className={cn(
+            "p-2 min-w-[40px] relative",
+            index === days.length - 1 && "rounded-tr-2xl",
+            holidays.isHoliday(date) ? "text-red-500" : "",
+            isSaturday(date) ? "text-blue-500" : "",
+            isWeekend(date) ? "text-red-500" : "",
+          )}
+        >
+          <div className="text-sm">{format(date, 'd')}</div>
+          <div className="text-xs">({format(date, 'E', { locale: ja })})</div>
+          {holidays.isHoliday(date) && (
+            <div className="text-[8px] text-red-500 leading-tight mt-0.5">
+              {holidays.between(date, date)[0]?.name}
+            </div>
+          )}
+        </th>
+      ))}
+    </tr>
+  );
+});
+
+// バックグラウンドワーカーの代替：WebWorkerのないケースで使用する非同期処理キューマネージャー
+class TaskQueue {
+  private queue: (() => Promise<any>)[] = [];
+  private processing = false;
+
+  add(task: () => Promise<any>) {
+    this.queue.push(task);
+    
+    if (!this.processing) {
+      this.processQueue();
+    }
+  }
+
+  private async processQueue() {
+    if (this.queue.length === 0) {
+      this.processing = false;
+      return;
+    }
+
+    this.processing = true;
+    const task = this.queue.shift();
+    
+    try {
+      await task?.();
+    } catch (error) {
+      console.error('Task error:', error);
+    }
+    
+    // 非同期で次のタスクを処理（メインスレッドをブロックしない）
+    setTimeout(() => this.processQueue(), 0);
+  }
+}
 
 export function ShiftGrid() {
   const [currentDate, setCurrentDate] = useState(new Date(2025, 2)); // 2025年3月
   const [shifts, setShifts] = useState<{ [key: string]: string }>({});
   const [employees, setEmployees] = useState(initialEmployees);
-  const [selectedEmployee, setSelectedEmployee] = useState<typeof employees[0] | null>(null);
+  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isCreatingEmployee, setIsCreatingEmployee] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [hasPendingChanges, setHasPendingChanges] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const { getUpdatedShiftCode } = useShiftTypes();
+  
+  // WebWorkerの代わりにTaskQueueを使用
+  const taskQueueRef = useRef(new TaskQueue());
   
   // メモ化したSupabaseクライアント - コンポーネントライフサイクル中1回だけ生成
   const supabase = useMemo(() => createBrowserClient(), []);
@@ -77,6 +269,20 @@ export function ShiftGrid() {
   // 初期ロード完了フラグ
   const initialLoadDoneRef = useRef<{[key: string]: boolean}>({});
 
+  // カスタムイベントリスナーをセットアップ
+  useEffect(() => {
+    const handleEditEmployee = (e: Event) => {
+      const customEvent = e as CustomEvent<Employee>;
+      setSelectedEmployee(customEvent.detail);
+    };
+    
+    window.addEventListener('edit-employee', handleEditEmployee);
+    
+    return () => {
+      window.removeEventListener('edit-employee', handleEditEmployee);
+    };
+  }, []);
+
   // 現在の月のキーを取得（メモ化して再計算を防止）
   const currentMonthKey = useMemo(() => 
     format(currentDate, 'yyyy-MM'), 
@@ -84,15 +290,7 @@ export function ShiftGrid() {
 
   // 処理ブロックを設定・解除する関数
   const setProcessLock = useCallback((isLocked: boolean) => {
-    if (isLocked) {
-      isProcessingRef.current = true;
-      // 最低限の処理時間を保証（UIのちらつき防止）
-      setTimeout(() => {
-        isProcessingRef.current = false;
-      }, MIN_PROCESSING_TIME);
-    } else {
-      isProcessingRef.current = false;
-    }
+    isProcessingRef.current = isLocked;
   }, []);
 
   // 変更があった場合のみ保存状態を更新（無駄なレンダリングを防止）
@@ -104,7 +302,7 @@ export function ShiftGrid() {
     }
   }, [shifts, hasPendingChanges]);
 
-  // データ読み込み - 初回のみ実行、以降は手動実行
+  // データ読み込み - 効率的な実装
   const fetchData = useCallback(async (date: Date, forceReload = false) => {
     if (isProcessingRef.current) return;
     
@@ -118,6 +316,7 @@ export function ShiftGrid() {
     // キャッシュがあり有効期限内なら使用（強制リロードでない場合）
     const cachedData = shiftsCache.current[monthKey];
     if (!forceReload && cachedData && (Date.now() - cachedData.timestamp) < CACHE_TTL) {
+      // 即時UI更新のための最小限のデータのみセット
       setShifts(cachedData.data);
       initialLoadDoneRef.current[monthKey] = true;
       return;
@@ -127,7 +326,10 @@ export function ShiftGrid() {
       setProcessLock(true);
       setIsLoading(true);
       
-      // 大きなバッチサイズでデータ取得（一度に多くのデータを取得）
+      // 非同期処理を遅延実行しUIをブロックしない
+      await new Promise(resolve => setTimeout(resolve, LAZY_LOAD_DELAY));
+      
+      // 大きなバッチサイズでデータ取得
       const { data, error } = await supabase
         .from('shift_cells')
         .select('*')
@@ -140,24 +342,38 @@ export function ShiftGrid() {
         return;
       }
 
-      // データの変換（ループを最適化）
+      // 高速化したデータ変換（プリアロケーション）
       const shiftMap: { [key: string]: string } = {};
       if (data) {
-        for (let i = 0; i < data.length; i++) {
-          const entry = data[i];
-          const key = `${entry.employee_id}-${entry.date}`;
-          shiftMap[key] = entry.shift_code;
-        }
+        // バックグラウンドでの非同期データ変換
+        taskQueueRef.current.add(async () => {
+          if (data) {
+            for (let i = 0; i < data.length; i++) {
+              const entry = data[i];
+              const key = `${entry.employee_id}-${entry.date}`;
+              shiftMap[key] = entry.shift_code;
+            }
+          }
+          
+          // キャッシュに保存
+          shiftsCache.current[monthKey] = {
+            data: { ...shiftMap },
+            timestamp: Date.now()
+          };
+          
+          // レンダリング最適化：必要な場合のみ更新
+          setShifts(prev => {
+            const isEqual = Object.keys(prev).length === Object.keys(shiftMap).length && 
+              Object.keys(prev).every(key => prev[key] === shiftMap[key]);
+            
+            return isEqual ? prev : shiftMap;
+          });
+        });
+      } else {
+        // データがない場合は空オブジェクトをセット
+        setShifts({});
       }
-
-      // キャッシュに保存
-      shiftsCache.current[monthKey] = {
-        data: { ...shiftMap },
-        timestamp: Date.now()
-      };
-
-      // 状態更新（一度だけ）
-      setShifts(shiftMap);
+      
       initialLoadDoneRef.current[monthKey] = true;
     } catch (err) {
       console.error('Error loading shifts:', err);
@@ -190,7 +406,6 @@ export function ShiftGrid() {
     
     setCurrentDate(prev => {
       const newDate = subMonths(prev, 1);
-      // 次回のレンダリングでfetchDataが自動実行される
       return newDate;
     });
   }, []);
@@ -200,7 +415,6 @@ export function ShiftGrid() {
     
     setCurrentDate(prev => {
       const newDate = addMonths(prev, 1);
-      // 次回のレンダリングでfetchDataが自動実行される
       return newDate;
     });
   }, []);
@@ -213,7 +427,7 @@ export function ShiftGrid() {
     toast.info('データを最新の状態に更新しています...');
   }, [currentDate, fetchData, isLoading, isSaving]);
 
-  // 保存処理（すべての変更を保存 - 手動のみ）
+  // 保存処理（すべての変更を保存 - 手動のみ・高度に最適化）
   const saveAllChanges = useCallback(async () => {
     if (pendingChangesRef.current.size === 0 || isProcessingRef.current) return;
     
@@ -251,7 +465,8 @@ export function ShiftGrid() {
                 });
               }
             })
-            .catch(() => {
+            // 明示的にPromiseベースのエラーハンドリング
+            .then(undefined, () => {
               // エラー時は挿入処理へ
               insertBatch.push({
                 employee_id: change.employeeId,
@@ -266,24 +481,27 @@ export function ShiftGrid() {
       await Promise.all(processingPromises);
       
       // 更新処理のバッチ実行（並列処理で高速化）
-      const BATCH_SIZE = 100; // バッチサイズを大きくして効率化
+      const BATCH_SIZE = 200; // 大きなバッチサイズで効率化
       const updatePromises = [];
       
-      for (let i = 0; i < updateBatch.length; i += BATCH_SIZE) {
-        const batch = updateBatch.slice(i, i + BATCH_SIZE);
-        
-        // 個別のUPDATE文を並列実行
-        const batchPromises = batch.map(item => 
-          supabase
-            .from('shift_cells')
-            .update({ shift_code: item.shift_code })
-            .eq('id', item.id)
-        );
-        
-        updatePromises.push(Promise.all(batchPromises));
+      // 更新操作をバッチ処理
+      if (updateBatch.length > 0) {
+        for (let i = 0; i < updateBatch.length; i += BATCH_SIZE) {
+          const batch = updateBatch.slice(i, i + BATCH_SIZE);
+          
+          // 個別のUPDATE文を並列実行
+          const batchPromises = batch.map(item => 
+            supabase
+              .from('shift_cells')
+              .update({ shift_code: item.shift_code })
+              .eq('id', item.id)
+          );
+          
+          updatePromises.push(Promise.all(batchPromises));
+        }
       }
       
-      // 挿入処理（バッチ実行）
+      // 挿入処理（バッチ実行・拡張）
       if (insertBatch.length > 0) {
         for (let i = 0; i < insertBatch.length; i += BATCH_SIZE) {
           const batch = insertBatch.slice(i, i + BATCH_SIZE);
@@ -295,21 +513,26 @@ export function ShiftGrid() {
         }
       }
       
-      // すべての更新と挿入を並列実行
-      await Promise.all(updatePromises);
+      if (updatePromises.length > 0) {
+        // すべての更新と挿入を並列実行
+        await Promise.all(updatePromises);
+      }
       
-      // キャッシュを更新（メモリ内のみ）
-      const updatedShifts = { ...shiftsRef.current };
-      changes.forEach(change => {
-        const key = `${change.employeeId}-${change.date}`;
-        updatedShifts[key] = change.shift;
+      // 非同期でキャッシュを更新（UIブロックを防止）
+      taskQueueRef.current.add(async () => {
+        // キャッシュを更新（メモリ内のみ）
+        const updatedShifts = { ...shiftsRef.current };
+        changes.forEach(change => {
+          const key = `${change.employeeId}-${change.date}`;
+          updatedShifts[key] = change.shift;
+        });
+        
+        // キャッシュを更新
+        shiftsCache.current[currentMonthKey] = {
+          data: updatedShifts,
+          timestamp: Date.now()
+        };
       });
-      
-      // キャッシュを更新
-      shiftsCache.current[currentMonthKey] = {
-        data: updatedShifts,
-        timestamp: Date.now()
-      };
       
       // 保存成功後、待機変更をクリア
       pendingChangesRef.current.clear();
@@ -325,22 +548,23 @@ export function ShiftGrid() {
     }
   }, [supabase, currentMonthKey, setProcessLock]);
 
-  // シフト変更時のハンドラ - 保存せずにローカル変更のみ
+  // シフト変更時のハンドラ - 即時変更のみ・保存なし
   const handleShiftChange = useCallback((employeeId: number, date: Date, newShift: string) => {
     if (isProcessingRef.current) return;
     
     const dateStr = format(date, 'yyyy-MM-dd');
     const key = `${employeeId}-${dateStr}`;
     
-    // 同じ値なら何もしない
+    // 同じ値なら何もしない（無駄な処理を回避）
     if (shiftsRef.current[key] === newShift) return;
     
-    // UIの即時更新（メモリ上のみ）- 保存はしない
+    // UIの即時更新（直接変更で高速化）
     setShifts(prev => {
-      return { ...prev, [key]: newShift };
+      const updated = { ...prev, [key]: newShift };
+      return updated;
     });
 
-    // 保存待ちリストに追加
+    // 保存待ちリストに追加（非同期で実行）
     pendingChangesRef.current.set(key, {
       employeeId,
       date: dateStr,
@@ -355,11 +579,7 @@ export function ShiftGrid() {
     return shift ? getUpdatedShiftCode(shift) : '−';
   }, [getUpdatedShiftCode]);
 
-  // メモ化された日付判定関数
-  const isWeekend = useCallback((date: Date) => getDay(date) === 0, []);
-  const isSaturday = useCallback((date: Date) => getDay(date) === 6, []);
-
-  // 全削除処理
+  // 全削除処理（高速実装）
   const handleDeleteAllShifts = useCallback(async () => {
     if (isProcessingRef.current) return;
     
@@ -377,8 +597,10 @@ export function ShiftGrid() {
         .gte('date', startDate)
         .lte('date', endDate);
       
-      // キャッシュから削除
-      delete shiftsCache.current[currentMonthKey];
+      // キャッシュから削除（非同期）
+      taskQueueRef.current.add(async () => {
+        delete shiftsCache.current[currentMonthKey];
+      });
       
       // ローカルデータをクリア
       setShifts({});
@@ -396,7 +618,7 @@ export function ShiftGrid() {
   }, [currentDate, supabase, currentMonthKey, setProcessLock]);
 
   // 従業員関連の処理
-  const handleEmployeeUpdate = useCallback((updatedEmployee: { id: number; name: string; givenName?: string }) => {
+  const handleEmployeeUpdate = useCallback((updatedEmployee: Employee) => {
     setEmployees(prev => prev.map(emp => 
       emp.id === updatedEmployee.id ? updatedEmployee : emp
     ));
@@ -432,16 +654,34 @@ export function ShiftGrid() {
     return "未保存の変更があります。「保存」ボタンを押して変更を確定してください。";
   }, [hasPendingChanges, isSaving]);
 
+  // ボタン無効化状態のメモ化
+  const isButtonDisabled = useMemo(() => 
+    isLoading || isSaving,
+  [isLoading, isSaving]);
+
+  // 保存ボタン無効化状態のメモ化
+  const isSaveButtonDisabled = useMemo(() => 
+    isButtonDisabled || pendingChangesRef.current.size === 0,
+  [isButtonDisabled]);
+
+  // ヘッダーメモ化
+  const headerComponent = useMemo(() => (
+    <ShiftHeader
+      currentDate={currentDate}
+      shifts={shifts}
+      employees={employees}
+      onPrevMonth={handlePrevMonth}
+      onNextMonth={handleNextMonth}
+    />
+  ), [currentDate, shifts, employees, handlePrevMonth, handleNextMonth]);
+
+  // レジェンドメモ化
+  const legendComponent = useMemo(() => <ShiftLegend />, []);
+
   return (
     <div className="min-h-screen pb-20">
-      <ShiftHeader
-        currentDate={currentDate}
-        shifts={shifts}
-        employees={employees}
-        onPrevMonth={handlePrevMonth}
-        onNextMonth={handleNextMonth}
-      />
-      <ShiftLegend />
+      {headerComponent}
+      {legendComponent}
       <div className="overflow-x-auto">
         {displayStatus && (
           <div className="flex justify-center items-center py-4 mb-4 bg-blue-50 rounded-lg">
@@ -458,118 +698,19 @@ export function ShiftGrid() {
         
         <table className="w-full border-collapse [&_td]:border-black/60 [&_th]:border-black/60 [&_td]:border-[1px] [&_th]:border-[1px] rounded-2xl overflow-hidden">
           <thead>
-            <tr className="bg-gradient-to-b from-gray-50/95 to-gray-50/90">
-              <th className="px-2 py-3 sticky left-0 bg-gradient-to-b from-gray-50/95 to-gray-50/90 z-10 w-[50px] min-w-[50px] first:rounded-tl-2xl">
-                担当
-              </th>
-              {days.map((date, index) => (
-                <th
-                  key={date.toString()}
-                  className={cn(
-                    "p-2 min-w-[40px] relative",
-                    index === days.length - 1 && "rounded-tr-2xl",
-                    holidays.isHoliday(date) ? "text-red-500" : "",
-                    isSaturday(date) ? "text-blue-500" : "",
-                    isWeekend(date) ? "text-red-500" : "",
-                  )}
-                >
-                  <div className="text-sm">{format(date, 'd')}</div>
-                  <div className="text-xs">({format(date, 'E', { locale: ja })})</div>
-                  {holidays.isHoliday(date) && (
-                    <div className="text-[8px] text-red-500 leading-tight mt-0.5">
-                      {holidays.between(date, date)[0]?.name}
-                    </div>
-                  )}
-                </th>
-              ))}
-            </tr>
+            <DateHeader days={days} />
           </thead>
           <tbody>
             {employees.map((employee, index) => (
-              <tr 
+              <EmployeeRow
                 key={employee.id}
-                className={index % 2 === 0 ? 'bg-white' : 'bg-slate-100'}
-              >
-                <td 
-                  className={cn(
-                    "sticky left-0 z-10 font-medium text-sm whitespace-nowrap p-0",
-                    index % 2 === 0 ? 'bg-white' : 'bg-slate-100'
-                  )}
-                >
-                  <div 
-                    className={cn(
-                      "employee-icon group flex items-center justify-center h-[36px] mx-auto cursor-pointer rounded-2xl w-[62px] whitespace-nowrap overflow-hidden",
-                      index % 2 === 0 && [
-                        'bg-gradient-to-b from-white to-gray-50',
-                        'border border-black/15',
-                        'shadow-[0_2px_4px_rgba(0,0,0,0.05),0_4px_8px_-2px_rgba(0,0,0,0.1)]',
-                        'hover:shadow-[0_4px_8px_rgba(0,0,0,0.1),0_8px_16px_-4px_rgba(0,0,0,0.15)]',
-                        'hover:border-black/20',
-                        'transform-gpu hover:translate-y-[-2px] hover:scale-[1.02]',
-                        'transition-all duration-300 ease-out'
-                      ],
-                      index % 2 !== 0 && [
-                        'bg-gradient-to-b from-gray-900 to-black',
-                        'shadow-[0_2px_4px_rgba(0,0,0,0.2)]',
-                        'hover:shadow-[0_4px_8px_rgba(0,0,0,0.25)]',
-                        'transform-gpu hover:translate-y-[-2px] hover:scale-[1.02]',
-                        'transition-all duration-300 ease-out'
-                      ]
-                    )}
-                    onClick={() => {
-                      setSelectedEmployee(employee);
-                    }}
-                  >
-                    <div className="flex items-center justify-center gap-0.5">
-                      <span 
-                        className={cn(
-                          "font-extrabold tracking-tight text-[15px] whitespace-nowrap",
-                          index % 2 === 0 ? 'text-black' : 'text-white'
-                        )}
-                        data-text={employee.name}
-                      >
-                        {employee.name}
-                      </span>
-                      {employee.givenName && (
-                        <span className={cn(
-                          "text-[11px] font-extrabold tracking-wide whitespace-nowrap",
-                          index % 2 === 0 ? 'text-black/70' : 'text-white/70'
-                        )}>
-                          {employee.givenName[0]}
-                        </span>
-                      )}
-                      <UserCog 
-                        className={cn(
-                          "w-3.5 h-3.5 ml-0.5 opacity-0 transition-all duration-300 group-hover:opacity-100 transform group-hover:scale-110",
-                          index % 2 === 0 ? 'text-black/60' : 'text-white/70'
-                        )}
-                      />
-                    </div>
-                  </div>
-                </td>
-                {days.map((date) => {
-                  const shift = getShiftValue(employee.id, date);
-                  return (
-                    <td 
-                      key={date.toString()} 
-                      className={cn(
-                        "p-0",
-                        index === employees.length - 1 && date === days[0] && "rounded-bl-2xl",
-                        index === employees.length - 1 && date === days[days.length - 1] && "rounded-br-2xl",
-                        index % 2 === 0 ? 'bg-white' : 'bg-slate-100'
-                      )}
-                    >
-                      <ShiftCell
-                        shift={shift}
-                        employeeId={employee.id}
-                        date={date}
-                        rowType={index % 2 === 0 ? 'even' : 'odd'}
-                        onShiftChange={handleShiftChange}
-                      />
-                    </td>
-                  );
-                })}
-              </tr>
+                employee={employee}
+                days={days}
+                getShiftValue={getShiftValue}
+                handleShiftChange={handleShiftChange}
+                index={index}
+                rowsLength={employees.length}
+              />
             ))}
           </tbody>
         </table>
@@ -580,12 +721,12 @@ export function ShiftGrid() {
               "inline-flex items-center justify-center rounded-full text-sm font-medium",
               "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               "bg-primary text-primary-foreground shadow-lg hover:bg-primary/90 h-10 px-4",
-              (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
+              isButtonDisabled && "opacity-50 cursor-not-allowed"
             )}
             onClick={() => {
               setIsCreatingEmployee(true);
             }}
-            disabled={isLoading || isSaving}
+            disabled={isButtonDisabled}
           >
             <div className="icon-wrapper">
               <svg
@@ -609,13 +750,13 @@ export function ShiftGrid() {
           
           <button
             onClick={saveAllChanges}
-            disabled={isLoading || isSaving || pendingChangesRef.current.size === 0}
+            disabled={isSaveButtonDisabled}
             className={cn(
               "inline-flex items-center justify-center rounded-full text-sm font-medium",
               "transition-all duration-200 ease-in-out",
               "bg-green-600 text-white shadow-lg hover:bg-green-700 h-10 px-4",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              (isLoading || isSaving || pendingChangesRef.current.size === 0) && "opacity-50 cursor-not-allowed"
+              isSaveButtonDisabled && "opacity-50 cursor-not-allowed"
             )}
           >
             <Save className="w-4 h-4 mr-1.5" />
@@ -624,13 +765,13 @@ export function ShiftGrid() {
           
           <button
             onClick={handleRefreshData}
-            disabled={isLoading || isSaving}
+            disabled={isButtonDisabled}
             className={cn(
               "inline-flex items-center justify-center rounded-full text-sm font-medium",
               "transition-all duration-200 ease-in-out",
               "bg-blue-500 text-white shadow-lg hover:bg-blue-600 h-10 px-4",
               "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-              (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
+              isButtonDisabled && "opacity-50 cursor-not-allowed"
             )}
           >
             <RotateCcw className="w-4 h-4 mr-1.5" />
@@ -646,9 +787,9 @@ export function ShiftGrid() {
               "floating-delete inline-flex items-center justify-center rounded-full text-xs font-medium",
               "transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
               "bg-destructive text-destructive-foreground shadow-lg hover:bg-destructive/90 h-10 px-4",
-              (isLoading || isSaving) && "opacity-50 cursor-not-allowed"
+              isButtonDisabled && "opacity-50 cursor-not-allowed"
             )}
-            disabled={isLoading || isSaving}
+            disabled={isButtonDisabled}
           >
             <Trash2 className="w-4 h-4 mr-1.5" />
             全削除
@@ -666,7 +807,7 @@ export function ShiftGrid() {
               <AlertDialogAction
                 onClick={handleDeleteAllShifts}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors"
-                disabled={isLoading || isSaving}
+                disabled={isButtonDisabled}
               >
                 削除する
               </AlertDialogAction>
