@@ -3,6 +3,13 @@ import type { Metadata } from 'next';
 import { ShiftTypesProvider } from '@/contexts/shift-types-context';
 import { Toaster } from '@/components/ui/toaster';
 import { Toaster as SonnerToaster } from 'sonner';
+import { Inter } from 'next/font/google';
+
+// フォントの設定
+const inter = Inter({
+  subsets: ['latin'],
+  display: 'swap',
+});
 
 export const metadata: Metadata = {
   title: 'Create Next App',
@@ -15,7 +22,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }) {
   return (
-    <html lang="ja">
+    <html lang="ja" className={inter.className}>
       <body className="font-sans">
         <ShiftTypesProvider>
           {children}
