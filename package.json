@@ -46,6 +46,7 @@
     "@react-three/fiber": "^9.1.0",
     "@supabase/ssr": "^0.6.1",
     "@supabase/supabase-js": "^2.49.3",
+    "@tailwindcss/postcss": "^4.0.17",
     "@tanstack/react-virtual": "3.13.5",
     "@types/lodash": "^4.17.16",
     "@types/node": "22.13.14",
