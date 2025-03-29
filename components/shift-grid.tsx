@@ -16,7 +16,6 @@ import { Button } from '@/components/ui/button';
 import { debounce } from 'lodash';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { useInView } from 'react-intersection-observer';
-import { PdfExport } from './pdf-export';
 
 // 遅延ロードするコンポーネント
 const ShiftLegend = dynamic(() => import('./shift-legend').then(mod => ({ default: mod.ShiftLegend })), {
@@ -557,15 +556,9 @@ export function ShiftGrid() {
           onPrevMonth={handlePrevMonth}
           onNextMonth={handleNextMonth}
         />
-        <PdfExport 
-          currentDate={currentDate}
-          employees={employees}
-          getShiftValue={getShiftValue}
-          title="シフト管理表"
-        />
       </div>
     </div>
-  ), [currentDate, shifts, employees, handlePrevMonth, handleNextMonth, getShiftValue]);
+  ), [currentDate, shifts, employees, handlePrevMonth, handleNextMonth]);
 
   // 曜日ヘッダー行のレンダリング
   const renderTableHeader = useMemo(() => (
