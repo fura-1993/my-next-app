@@ -53,7 +53,7 @@ export function WaterDroplet({ onBurst }: WaterDropletProps) {
         >
           {/* Main droplet */}
           <motion.div
-            className="absolute inset-0 rounded-full bg-gradient-to-b from-blue-100/90 via-blue-300/80 to-blue-400/70 backdrop-blur-sm"
+            className="absolute inset-[0px] rounded-full bg-gradient-to-b from-blue-100/90 via-blue-300/80 to-blue-400/70 backdrop-blur-sm"
             style={{
               boxShadow: `
                 inset 0 4px 8px rgba(255,255,255,0.9),
@@ -92,7 +92,7 @@ export function WaterDroplet({ onBurst }: WaterDropletProps) {
           <AnimatePresence>
             {!isVisible && (
               <motion.div
-                className="absolute inset-0 rounded-full border-2 border-blue-200/40"
+                className="absolute inset-[0px] rounded-full border-2 border-blue-200/40"
                 initial={{ scale: 1 }}
                 exit={{
                   scale: 4,

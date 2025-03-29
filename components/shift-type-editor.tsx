@@ -98,7 +98,7 @@ export function ShiftTypeEditor({ isOpen, onClose, shiftType, onSave, isCreating
             {showColorPicker && (
               <div className="absolute z-50">
                 <div
-                  className="fixed inset-0"
+                  className="fixed inset-[0px]"
                   onClick={() => setShowColorPicker(false)}
                 />
                 <ChromePicker
