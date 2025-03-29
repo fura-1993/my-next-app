@@ -17,7 +17,6 @@ export function ShiftHeader({ currentDate, shifts, employees, onPrevMonth, onNex
   return (
     <div>
       <div className="fixed top-0.5 left-1/2 -translate-x-1/2 z-50 flex items-center justify-center gap-1.5">
-          {/* PDF出力ボタンはshift-grid.tsxでPdfExportコンポーネントとして実装 */}
           <Button
             className="button-3d bg-gradient-to-b from-blue-500 via-blue-600 to-blue-700 hover:from-blue-600 hover:via-blue-700 hover:to-blue-800 text-white border-none shadow-[0_4px_10px_-2px_rgba(59,130,246,0.5)]"
             size="sm"
