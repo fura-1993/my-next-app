@@ -109,7 +109,7 @@
   }
 
   .button-3d::before {
-    @apply absolute inset-0 rounded-lg opacity-0 transition-opacity duration-300;
+    @apply absolute inset-[0px] rounded-lg opacity-0 transition-opacity duration-300;
     content: '';
     background: linear-gradient(
       135deg,
@@ -169,7 +169,7 @@
   }
 
   .balloon-body {
-    @apply absolute inset-0 rounded-full overflow-hidden;
+    @apply absolute inset-[0px] rounded-full overflow-hidden;
     background: linear-gradient(135deg, 
       rgba(40, 40, 40, 0.95) 0%,
       rgba(30, 30, 30, 0.85) 45%,
@@ -261,7 +261,7 @@
 
   /* Burst Effects */
   .burst-ring {
-    @apply absolute inset-0 rounded-full;
+    @apply absolute inset-[0px] rounded-full;
     border: 2px solid rgba(0, 0, 0, 0.4);
     animation: expand 0.4s ease-out forwards;
   }
