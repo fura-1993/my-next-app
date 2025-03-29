@@ -77,7 +77,7 @@
     @apply border-[color:hsl(var(--border))];
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-[color:hsl(var(--background))] text-[color:hsl(var(--foreground))];
     position: relative;
   }
 
